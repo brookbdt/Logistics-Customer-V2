@@ -1151,22 +1151,28 @@
                     </div>
                     <div>
                       <label
+                        for="height-display"
                         class="block text-sm font-medium text-gray-700 mb-1"
                         >Height (cm)</label
                       >
                       <div
+                        id="height-display"
                         class="p-3 bg-gray-50 rounded-lg border border-gray-200"
+                        aria-live="polite"
                       >
                         {height ? height.toFixed(1) : "N/A"}
                       </div>
                     </div>
                     <div>
                       <label
+                        for="weight-display"
                         class="block text-sm font-medium text-gray-700 mb-1"
                         >Weight (kg)</label
                       >
                       <div
+                        id="weight-display"
                         class="p-3 bg-gray-50 rounded-lg border border-gray-200"
+                        aria-live="polite"
                       >
                         {actualWeight.toFixed(2)}
                       </div>

@@ -29,13 +29,15 @@ const config = {
     // Add TypeScript configuration with modern options
     typescript: {
       config: (tsconfig) => {
-        const compilerOptions = { ...tsconfig.compilerOptions };
+        // Create a clean version of compiler options without deprecated options
+        const { importsNotUsedAsValues, preserveValueImports, ...cleanCompilerOptions } =
+          tsconfig.compilerOptions || {};
 
-        // Ensure modern options are set
+        // Return configuration with modern options
         return {
           ...tsconfig,
           compilerOptions: {
-            ...compilerOptions,
+            ...cleanCompilerOptions,
             verbatimModuleSyntax: true,
             ignoreDeprecations: "5.0"
           }

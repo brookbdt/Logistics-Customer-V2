@@ -17,7 +17,7 @@
   // Import our new components
   import OrderAcceptedAnimation from "$lib/components/order-accepted-animation.svelte";
   import PaymentIncentives from "$lib/components/payment-incentives.svelte";
-
+  //lol
   dayjs.extend(relativeTime);
 
   export let data;

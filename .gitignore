@@ -61,3 +61,6 @@ pnpm-debug.log*
 .temp
 node_modules
 .3T
+
+# Firebase
+*firebase-adminsdk*.json

@@ -1,0 +1,63 @@
+.DS_Store
+.vercel
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Dependencies
+/node_modules
+/.pnpm-store
+
+# SvelteKit build output
+/build
+/.svelte-kit
+/package
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# IDE and editor files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Deployment and service-specific
+.vercel
+.cursor
+.amplify
+.config
+.cocoapods
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Cache directories
+.cache
+.temp
+node_modules
+.3T

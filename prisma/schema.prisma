@@ -1,0 +1,1007 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextIndex", "fullTextSearch"]
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+model User {
+  id            Int            @id @default(autoincrement())
+  userName      String?
+  phoneNumber   String?        @unique
+  email         String         @unique
+  isEmployee    Boolean
+  createdAt     DateTime       @default(now())
+  updateAt      DateTime       @updatedAt
+  deletedAt     DateTime?
+  jwtPassword   String?
+  twoFAPassword String?
+  twoFARequired Boolean        @default(false)
+  Employee      Employee?
+  Customer      Customer?
+  VendorDrivers VendorDrivers?
+  DriverRating  DriverRating[]
+  Comments      Comments[]
+
+  @@fulltext([userName, phoneNumber, email])
+}
+
+model Employee {
+  id                    Int                     @id @default(autoincrement())
+  activityStatus        Employee_activityStatus
+  hiredDate             DateTime
+  isSuspended           Boolean
+  userId                Int                     @unique
+  roleId                Int
+  warehouseId           Int?
+  createdAt             DateTime                @default(now())
+  updateAt              DateTime                @updatedAt
+  deletedAt             DateTime?
+  stationId             Int?
+  isFired               Boolean                 @default(false)
+  isDriver              Boolean                 @default(false)
+  address               String
+  dateOfBirth           DateTime?
+  department            String
+  employmentStartDate   DateTime?
+  jobTitle              String
+  staffIdNumber         String
+  employeeStatus        EmployeeStatus          @default(Full_Time)
+  fcmToken              String?
+  User                  User                    @relation(fields: [userId], references: [id])
+  Role                  Role                    @relation(fields: [roleId], references: [id])
+  selections            Selection[]
+  dailyScheduleEmployee DailyScheduleEmployee[]
+  Dispatches            Dispatch[]
+  Suspensions           Suspended[]
+  fired                 Fired[]
+  AssignedTasks         Task[]                  @relation("Ticket Assigned To")
+  CreatorTasks          Task[]                  @relation("Task Created By")
+  AssingedTickets       Ticket[]                @relation("Ticket Assigned To")
+  CreatorTickets        Ticket[]                @relation("Ticket Created By")
+  Vehicles              Vehicles[]
+  Message               Message[]
+  ChatMembers           ChatMembers[]
+  EmployeeFile          EmployeeFile[]
+
+  @@index([roleId])
+  @@index([userId])
+  @@index([warehouseId])
+  @@index([stationId])
+}
+
+model Message {
+  id               Int       @id @default(autoincrement())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+  text             String
+  senderEmployeeId Int
+  chatId           Int
+  sender           Employee  @relation(fields: [senderEmployeeId], references: [id])
+  Chat             Chat      @relation(fields: [chatId], references: [id])
+
+  @@index([senderEmployeeId])
+  @@index([chatId])
+}
+
+model Chat {
+  id          Int           @id @default(autoincrement())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+  chatName    String?
+  ChatMembers ChatMembers[]
+  Message     Message[]
+}
+
+model ChatMembers {
+  id         Int      @id @default(autoincrement())
+  chatId     Int
+  employeeId Int
+  Chat       Chat     @relation(fields: [chatId], references: [id])
+  Employee   Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([chatId, employeeId])
+  @@index([employeeId])
+}
+
+model Vehicles {
+  id                 Int                  @id @default(autoincrement())
+  employeeId         Int?
+  plateNo            String
+  brand              String
+  vehicleType        Vehicles_vehicleType
+  createdAt          DateTime             @default(now())
+  deletedAt          DateTime?
+  updateAt           DateTime?            @updatedAt
+  vendorHasDriver    Boolean              @default(false)
+  vendorId           Int?
+  vehicleDescription String?
+  vehicleOwnerId     Int?
+  vendorDriverId     Int?
+  OwnerVendor        Vendor?              @relation(fields: [vendorId], references: [id])
+  VehicleOwner       VehicleOwners?       @relation(fields: [vehicleOwnerId], references: [id])
+  Employee           Employee?            @relation(fields: [employeeId], references: [id])
+  VendorDrivers      VendorDrivers?       @relation(fields: [vendorDriverId], references: [id])
+
+  @@index([vehicleOwnerId])
+  @@index([vendorDriverId])
+  @@index([employeeId])
+  @@index([vendorId])
+}
+
+model VendorDrivers {
+  id                     Int                      @id @default(autoincrement())
+  createdAt              DateTime                 @default(now())
+  updateAt               DateTime                 @updatedAt
+  deletedAt              DateTime?
+  stationId              Int?
+  isFired                Boolean                  @default(false)
+  activityStatus         Employee_activityStatus
+  hiredDate              DateTime
+  userId                 Int                      @unique
+  roleId                 Int
+  warehouseId            Int?
+  address                String
+  staffIdNumber          String
+  fcmToken               String?
+
+  vendorId               Int?
+  Vendor                 Vendor?                  @relation(fields: [vendorId], references: [id])
+  User                   User                     @relation(fields: [userId], references: [id])
+  Role                   Role                     @relation(fields: [roleId], references: [id])
+  Vehicles               Vehicles[]
+  VendorDriverFile       VendorDriverFile[]
+  VendorDriverWarehouses VendorDriverWarehouses[]
+  Dispatches             Dispatch[]
+
+  @@index([vendorId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model VendorDriverWarehouses {
+  id             Int           @id @default(autoincrement())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+  vendorDriverId Int
+  warehouseId    Int
+  VendorDriver   VendorDrivers @relation(fields: [vendorDriverId], references: [id])
+  Warehouse      Warehouse     @relation(fields: [warehouseId], references: [id])
+
+  @@index([vendorDriverId])
+  @@index([warehouseId])
+}
+
+model VehicleOwners {
+  id                Int                 @id @default(autoincrement())
+  name              String
+  email             String
+  phoneNumber       String
+  address           String
+  vendorId          Int?
+  fcmToken          String?
+  Vendor            Vendor?             @relation(fields: [vendorId], references: [id])
+  Vehicles          Vehicles[]
+  VehicleOwnersFile VehicleOwnersFile[]
+
+  @@index([vendorId])
+}
+
+model VehicleOwnersFile {
+  id             Int           @id @default(autoincrement())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  fileId         Int
+  vehicleOwnerId Int
+  VehicleOwners  VehicleOwners @relation(fields: [vehicleOwnerId], references: [id], onDelete: Cascade)
+  File           File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([vehicleOwnerId])
+}
+
+model VendorDriverFile {
+  id             Int           @id @default(autoincrement())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  fileId         Int
+  vendorDriverId Int
+  VendorDrivers  VendorDrivers @relation(fields: [vendorDriverId], references: [id], onDelete: Cascade)
+  File           File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([vendorDriverId])
+}
+
+model Vendor {
+  id               Int             @id @default(autoincrement())
+  email            String
+  phoneNumber      String
+  address          String
+  createdAt        DateTime        @default(now())
+  updateAt         DateTime        @updatedAt
+  deletedAt        DateTime?
+  vendorType       VendorType
+  description      String?
+  fileId           Int?            @unique
+  companyName      String          @default("Unknown")
+  contactPerson    String          @default("Unknown")
+  fcmToken         String?
+  File             File?           @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  OperatorVehicles Vehicles[]
+  VehicleOwners    VehicleOwners[]
+  Warehouse        Warehouse[]
+  VendorDrivers    VendorDrivers[]
+
+  @@index([fileId])
+}
+
+model Suspended {
+  id           Int       @id @default(autoincrement())
+  employeeId   Int
+  startingDate DateTime
+  endDate      DateTime
+  description  String
+  createdAt    DateTime  @default(now())
+  updateAt     DateTime  @updatedAt
+  deletedAt    DateTime?
+  Employee     Employee  @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+}
+
+model Fired {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int
+  firedDate   DateTime
+  description String
+  createdAt   DateTime  @default(now())
+  updateAt    DateTime  @updatedAt
+  deletedAt   DateTime?
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+}
+
+model Customer {
+  id                   Int                    @id @default(autoincrement())
+  userId               Int                    @unique
+  customerType         Customer_customerType?
+  premium              Boolean?
+  physicalAddress      String?
+  mapAddress           String?
+  createdAt            DateTime               @default(now())
+  updateAt             DateTime               @updatedAt
+  deletedAt            DateTime?
+  companyName          String?
+  tinNumber            String?
+  fcmToken             String?
+  User                 User                   @relation(fields: [userId], references: [id])
+  SentOrders           Order[]                @relation("order sender")
+  ReceivedOrders       Order[]                @relation("order receiver")
+  Tickets              Ticket[]
+  OrderRating          OrderRating[]
+  DriverRating         DriverRating[]
+  CustomerNotification CustomerNotification[]
+}
+
+model Role {
+  id               Int             @id @default(autoincrement())
+  name             String          @unique
+  description      String          @db.VarChar(500)
+  createdAt        DateTime        @default(now())
+  updateAt         DateTime        @updatedAt
+  deletedAt        DateTime?
+  isWarehouseAdmin Boolean         @default(false)
+  Employees        Employee[]
+  Scopes           Scope[]
+  VendorDrivers    VendorDrivers[]
+}
+
+model Scope {
+  id     Int    @id @default(autoincrement())
+  name   String
+  roleId Int
+  Role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([roleId])
+}
+
+model Order {
+  id                         Int                    @id @default(autoincrement())
+  senderCustomerId           Int
+  receiverCustomerId         Int?
+  receiverName               String?
+  receiverPhoneNumber        String?
+  receiverEmail              String?
+  dropOffTime                DateTime?
+  pickUpTime                 DateTime?
+  dropOffPhysicalLocation    String
+  dropOffMapLocation         String
+  pickUpPhysicalLocation     String
+  pickUpMapLocation          String
+  packageType                PackageType
+  paymentStatus              Boolean
+  orderStatus                Order_orderStatus
+  dispatchId                 Int?
+  createdAt                  DateTime               @default(now())
+  updateAt                   DateTime               @updatedAt
+  deletedAt                  DateTime?
+  isInCity                   Boolean                @default(false)
+  paymentRef                 String?
+  paymentAmount              Float?
+  paymentDate                DateTime?
+  paymentMethod              PaymentMethod?
+  actualWeight               Float?
+  baseShippingCost           Float?
+  dimensionalWeight          Float?
+  goodsType                  GoodsType?
+  orderType                  OrderType?
+  packagingCost              Float?
+  packagingType              PackagingType?
+  totalCost                  Float?
+  customerTypeMultiplier     Float?
+  destinationCity            String?
+  distanceInKm               Float?
+  effectiveWeight            Float?
+  estimatedTimeInMinutes     Int?
+  goodsTypeMultiplier        Float?
+  multipliedShippingCost     Float?
+  orderTypeMultiplier        Float?
+  originCity                 String?
+  peakHourMultiplier         Float?
+  premiumTypeMultiplier      Float?
+  subscriptionTypeMultiplier Float?
+  totalAdditionalFees        Float?
+  vehicleMultiplier          Float?
+  vehicleType                Vehicles_vehicleType?
+  orderMilestone             OrderMilestone[]
+  Sender                     Customer               @relation("order sender", fields: [senderCustomerId], references: [id])
+  Receiver                   Customer?              @relation("order receiver", fields: [receiverCustomerId], references: [id])
+  Dispatch                   Dispatch?              @relation(fields: [dispatchId], references: [id])
+  Tracker                    Tracker?
+  Inventory                  Inventory?
+  OrderDispatch              OrderDispatch[]
+  OrderRating                OrderRating[]
+  DriverRating               DriverRating[]
+  CustomerNotification       CustomerNotification[]
+
+  @@index([senderCustomerId])
+  @@index([receiverCustomerId])
+  @@index([dispatchId])
+}
+
+model OrderRating {
+  id         Int       @id @default(autoincrement())
+  createdAt  DateTime  @default(now())
+  updateAt   DateTime  @updatedAt
+  deletedAt  DateTime?
+  orderId    Int
+  comment    String?
+  rating     Int
+  customerId Int?
+  Customer   Customer? @relation(fields: [customerId], references: [id])
+  Order      Order     @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([customerId])
+}
+
+model DriverRating {
+  id         Int       @id @default(autoincrement())
+  createdAt  DateTime  @default(now())
+  updateAt   DateTime  @updatedAt
+  deletedAt  DateTime?
+  comment    String?
+  rating     Int
+  customerId Int?
+  userId     Int
+  orderId    Int
+  Order      Order     @relation(fields: [orderId], references: [id])
+  User       User      @relation(fields: [userId], references: [id])
+  Customer   Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([userId])
+  @@index([customerId])
+  @@index([orderId])
+}
+
+model OrderMilestone {
+  id             Int       @id @default(autoincrement())
+  orderId        Int
+  description    String
+  createdAt      DateTime  @default(now())
+  updateAt       DateTime  @updatedAt
+  deletedAt      DateTime?
+  isCompleted    Boolean   @default(false)
+  coordinates    String?
+  warehouseId    Int?
+  executionOrder Int?
+  Order          Order     @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+}
+
+model Tracker {
+  id          Int       @id @default(autoincrement())
+  mapLocation String
+  orderId     Int       @unique
+  createdAt   DateTime  @default(now())
+  updateAt    DateTime  @updatedAt
+  deletedAt   DateTime?
+  Order       Order     @relation(fields: [orderId], references: [id])
+}
+
+model Dispatch {
+  id                 Int             @id @default(autoincrement())
+  assignedEmployeeId Int?
+  assignedVendorDriverId   Int?
+  createdAt          DateTime        @default(now())
+  updateAt           DateTime        @updatedAt
+  deletedAt          DateTime?
+  AssignedEmployee   Employee?       @relation(fields: [assignedEmployeeId], references: [id])
+  AssignedVendorDriver VendorDrivers? @relation(fields: [assignedVendorDriverId], references: [id])
+  Orders             Order[]
+  OrderDispatches    OrderDispatch[]
+
+  @@index([assignedEmployeeId])
+  @@index([assignedVendorDriverId])
+}
+
+model Warehouse {
+  id                     Int                       @id @default(autoincrement())
+  name                   String
+  mapLocation            String
+  phoneNumber            String
+  physicalLocation       String
+  capacity               Capacity
+  warehouseStatus        Warehouse_warehouseStatus
+  createdAt              DateTime                  @default(now())
+  updateAt               DateTime                  @updatedAt
+  deletedAt              DateTime?
+  regionId               Int
+  email                  String
+  shippingAddress        String
+  attachment             String?
+  vendorId               Int?
+  Vendor                 Vendor?                   @relation(fields: [vendorId], references: [id])
+  selections             Selection[]
+  inventories            Inventory[]               @relation("Current Warehouse")
+  nextWarehouses         Inventory[]               @relation("Next Warehouse")
+  region                 Region                    @relation(fields: [regionId], references: [id])
+  Task                   Task[]
+  Ticket                 Ticket[]
+  dailySchedules         DailySchedule[]
+  VendorDriverWarehouses VendorDriverWarehouses[]
+
+  @@index([vendorId])
+  @@index([regionId])
+  @@fulltext([name, mapLocation, phoneNumber])
+}
+
+model DailySchedule {
+  id          Int       @id @default(autoincrement())
+  day         String
+  startTime   String?
+  endTime     String?
+  warehouseId Int
+  isHoliday   Boolean   @default(false)
+  Warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@index([warehouseId])
+}
+
+model DailyScheduleEmployee {
+  id         Int      @id @default(autoincrement())
+  day        String
+  startTime  String
+  endTime    String
+  isHoliday  Boolean  @default(false)
+  employeeId Int
+  Employee   Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+}
+
+model DailyScheduleStation {
+  id        Int     @id @default(autoincrement())
+  day       String
+  startTime String
+  endTime   String
+  stationId Int
+  isHoliday Boolean @default(false)
+  Station   Station @relation(fields: [stationId], references: [id])
+
+  @@index([stationId])
+}
+
+model Region {
+  id          Int         @id @default(autoincrement())
+  name        String
+  createdAt   DateTime    @default(now())
+  coordinates Json
+  deletedAt   DateTime?
+  warehouses  Warehouse[]
+  stations    Station[]
+}
+
+model Station {
+  id                    Int                    @id @default(autoincrement())
+  name                  String
+  mapLocation           String?
+  physicalLocation      String?
+  phoneNumber           String
+  createdAt             DateTime               @default(now())
+  updateAt              DateTime               @updatedAt
+  deletedAt             DateTime?
+  regionId              Int
+  category              Category?
+  description           String?
+  email                 String
+  selections            Selection[]
+  dailySchedulesStation DailyScheduleStation[]
+  region                Region?                @relation(fields: [regionId], references: [id])
+
+  @@index([regionId])
+  @@fulltext([name, phoneNumber])
+}
+
+model Selection {
+  id          Int        @id @default(autoincrement())
+  employeeId  Int
+  warehouseId Int?
+  stationId   Int?
+  employee    Employee   @relation(fields: [employeeId], references: [id])
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  station     Station?   @relation(fields: [stationId], references: [id])
+
+  @@index([warehouseId])
+  @@index([stationId])
+  @@index([employeeId])
+}
+
+model Suspensions {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  description  String
+  startingDate DateTime
+  endDate      DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([employeeId])
+}
+
+model Inventory {
+  id              Int             @id @default(autoincrement())
+  orderId         Int             @unique
+  wareHouseId     Int
+  location        String
+  inventoryStatus InventoryStatus
+  createdAt       DateTime        @default(now())
+  updateAt        DateTime        @updatedAt
+  deletedAt       DateTime?
+  nextWarehouseId Int?
+  Order           Order           @relation(fields: [orderId], references: [id])
+  Warehouse       Warehouse       @relation("Current Warehouse", fields: [wareHouseId], references: [id])
+  NextWarehouse   Warehouse?      @relation("Next Warehouse", fields: [nextWarehouseId], references: [id])
+
+  @@index([wareHouseId])
+  @@index([nextWarehouseId])
+  @@map("Inventory")
+}
+
+model OrderDispatch {
+  id             Int            @id @default(autoincrement())
+  dispatchId     Int
+  dispatchStatus DispatchStatus
+  createdAt      DateTime       @default(now())
+  updateAt       DateTime       @updatedAt
+  deletedAt      DateTime?
+  lastMile       Boolean        @default(false)
+  orderId        Int
+  toWarehouseId  Int?
+  Order          Order          @relation(fields: [orderId], references: [id])
+  Dispatch       Dispatch       @relation(fields: [dispatchId], references: [id])
+
+  @@index([dispatchId])
+  @@index([orderId])
+}
+
+model Task {
+  id                 Int            @id @default(autoincrement())
+  title              String
+  description        String
+  dueDate            DateTime
+  taskStatus         TaskStatus
+  assignedEmployeeId Int
+  tags               String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime?
+  deletedAt          DateTime?
+  creatorEmployeeId  Int
+  warehouseId        Int?
+  taskSeverity       SeverityStatus
+  Warehouse          Warehouse?     @relation(fields: [warehouseId], references: [id])
+  AssignedTo         Employee       @relation("Ticket Assigned To", fields: [assignedEmployeeId], references: [id])
+  CreatedBy          Employee       @relation("Task Created By", fields: [creatorEmployeeId], references: [id])
+  TaskFile           TaskFile[]
+
+  @@index([warehouseId])
+  @@index([assignedEmployeeId])
+  @@index([creatorEmployeeId])
+}
+
+model Ticket {
+  id                 Int            @id @default(autoincrement())
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime?
+  deletedAt          DateTime?
+  title              String
+  description        String
+  dueDate            DateTime?
+  ticketStatus       TicketStatus
+  assignedEmployeeId Int?
+  tags               String?
+  customerId         Int
+  creatorEmployeeId  Int?
+  warehouseId        Int?
+  resolution         String?
+  ticketSeverity     SeverityStatus @default(LOW)
+  ticketFiles        String?
+  reOpened           Boolean        @default(false)
+  Warehouse          Warehouse?     @relation(fields: [warehouseId], references: [id])
+  AssignedTo         Employee?      @relation("Ticket Assigned To", fields: [assignedEmployeeId], references: [id])
+  CreatedBy          Employee?      @relation("Ticket Created By", fields: [creatorEmployeeId], references: [id])
+  Customer           Customer       @relation(fields: [customerId], references: [id])
+  TicketFile         TicketFile[]
+  Comments           Comments[]
+
+  @@index([warehouseId])
+  @@index([assignedEmployeeId])
+  @@index([creatorEmployeeId])
+  @@index([customerId])
+}
+
+model Comments {
+  id        Int       @id @default(autoincrement())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime?
+  deletedAt DateTime?
+  text      String
+  userId    Int
+  ticketId  Int
+  User      User      @relation(fields: [userId], references: [id])
+  Ticket    Ticket    @relation(fields: [ticketId], references: [id])
+
+  @@index([userId])
+  @@index([ticketId])
+}
+
+model File {
+  id                Int                 @id @default(autoincrement())
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime?
+  deletedAt         DateTime?
+  fileName          String
+  key               String
+  TicketFile        TicketFile[]
+  EmployeeFile      EmployeeFile[]
+  TaskFile          TaskFile?
+  Vendor            Vendor?
+  VendorDriverFile  VendorDriverFile[]
+  VehicleOwnersFile VehicleOwnersFile[]
+}
+
+model TaskFile {
+  id        Int       @id @default(autoincrement())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime?
+  deletedAt DateTime?
+  fileId    Int       @unique
+  taskId    Int
+  Ticket    Task      @relation(fields: [taskId], references: [id])
+  File      File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([fileId])
+}
+
+model EmployeeFile {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  fileId     Int
+  employeeId Int
+  Employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  File       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([employeeId])
+}
+
+model TicketFile {
+  id        Int       @id @default(autoincrement())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime?
+  deletedAt DateTime?
+  fileId    Int       @unique
+  ticketId  Int
+  Ticket    Ticket    @relation(fields: [ticketId], references: [id])
+  File      File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([fileId])
+}
+
+model PricingMatrix {
+  id              Int       @id @default(autoincrement())
+  originCity      String
+  destinationCity String
+  unitRate        Float
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  @@unique([originCity, destinationCity])
+}
+
+model PackagingFee {
+  id            Int           @id @default(autoincrement())
+  packagingType PackagingType
+  price         Float
+  description   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+}
+
+model CustomerTypeMultiplier {
+  id         Int       @id @default(autoincrement())
+  type       String    @unique
+  multiplier Float
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  isDefault  Boolean   @default(false)
+}
+
+model SubscriptionTypeMultiplier {
+  id         Int       @id @default(autoincrement())
+  type       String    @unique
+  multiplier Float
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  isDefault  Boolean   @default(false)
+}
+
+model OrderTypeMultiplier {
+  id         Int       @id @default(autoincrement())
+  type       String    @unique
+  multiplier Float
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  isDefault  Boolean   @default(false)
+}
+
+model GoodsTypeMultiplier {
+  id         Int       @id @default(autoincrement())
+  type       String    @unique
+  multiplier Float
+  isDefault  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+}
+
+model PremiumTypeMultiplier {
+  id         Int       @id @default(autoincrement())
+  type       String
+  multiplier Float
+  isDefault  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+}
+
+model InCityPricing {
+  id               Int       @id @default(autoincrement())
+  city             String    @unique
+  baseFare         Float
+  distanceCharge   Float
+  timeCharge       Float
+  cancellationRate Float
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+  isDefault        Boolean   @default(false)
+}
+
+model VehicleTypeMultiplier {
+  id          Int       @id @default(autoincrement())
+  city        String
+  vehicleType String
+  multiplier  Float
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  isDefault   Boolean   @default(false)
+
+  @@unique([city, vehicleType])
+}
+
+model AdditionalFee {
+  id          Int       @id @default(autoincrement())
+  city        String
+  feeName     String
+  feeAmount   Float
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  isDefault   Boolean   @default(false)
+
+  @@unique([city, feeName])
+}
+
+model CustomerNotification {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customerId Int
+  title      String
+  content    String
+  isRead     Boolean  @default(false)
+  type       String
+  orderId    Int?
+  metadata   String?
+  Customer   Customer @relation(fields: [customerId], references: [id])
+  Order      Order?   @relation(fields: [orderId], references: [id])
+
+  @@index([customerId])
+  @@index([orderId])
+}
+
+model EmployeeNotification {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime
+  employeeId Int
+  title      String
+  content    String
+  isRead     Boolean  @default(false)
+  type       String
+  orderId    Int?
+  taskId     Int?
+  ticketId   Int?
+  metadata   String?
+
+  @@index([employeeId])
+  @@index([orderId])
+  @@index([taskId])
+  @@index([ticketId])
+}
+
+enum EmployeeStatus {
+  Full_Time
+  Part_Time
+  Temporary
+}
+
+enum Category {
+  Regional_Offices
+  Headquarters_Administrative_Office
+  Drop_off_Pick_up_Points
+  Third_Party_Warehouses
+  Others
+}
+
+enum PackageType {
+  PARCEL
+  PALLET
+  CONTAINER
+}
+
+enum TaskStatus {
+  ASSIGNED
+  COMPLETED
+}
+
+enum DispatchStatus {
+  ASSIGNED
+  INPROGRESS
+  COMPLETED
+  RETURNED
+}
+
+enum InventoryStatus {
+  INCOMING
+  ACCEPTED
+  OUTGOING
+}
+
+enum Capacity {
+  LEVEL1
+  LEVEL2
+}
+
+enum TicketStatus {
+  UNASSIGNED
+  ASSIGNED
+  COMPLETED
+}
+
+enum Warehouse_warehouseStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SeverityStatus {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum Vehicles_vehicleType {
+  BIKE
+  CAR
+  TRUCK
+}
+
+enum Order_orderStatus {
+  UNCLAIMED
+  CLAIMED
+  COMPLETED
+}
+
+enum Employee_activityStatus {
+  ASSIGNED
+  UNASSIGNED
+  SUSPENDED
+  TERMINATED
+}
+
+enum VendorType {
+  WAREHOUSE
+  VEHICLE_OWNERS
+  VEHICLE_OPERATORS
+}
+
+enum PaymentMethod {
+  CASH
+  CHAPA
+}
+
+enum OrderType {
+  STANDARD
+  EXPRESS
+  SAME_DAY
+}
+
+enum GoodsType {
+  NORMAL
+  SPECIAL_CARE
+}
+
+enum PackagingType {
+  STANDARD_BOX
+  PREMIUM_BOX
+  SPECIALTY_PACKAGING
+  CUSTOM_PACKAGING
+  SPECIALTY
+  CUSTOM
+}
+
+enum Customer_customerType {
+  BUSINESS
+  INDIVIDUAL
+}

@@ -1,0 +1,18 @@
+{
+    "buildCommand": "npm run build",
+    "installCommand": "npm install",
+    "framework": "sveltekit",
+    "devCommand": "npm run dev",
+    "builds": [
+        {
+            "src": "package.json",
+            "use": "@vercel/node"
+        }
+    ],
+    "build": {
+        "env": {
+            "NEXT_IGNORE_TYPE_ERRORS": "true",
+            "SKIP_TYPESCRIPT_CHECK": "true"
+        }
+    }
+}

@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+    .label {
+        @apply text-sm text-gray7 font-normal;
+    }
+
+    .input {
+        @apply mt-2 w-full border-[1px] border-[#5B5959] rounded-md h-12 px-4 focus:outline-none;
+    }
+
+    .textarea {
+        @apply mt-2 w-full border-[1px] border-[#5B5959] rounded-md px-4 focus:outline-none;
+    }
+}
+
+@layer utilities {
+    @keyframes shimmer {
+        0% {
+            transform: translateX(-100%);
+        }
+        100% {
+            transform: translateX(100%);
+        }
+    }
+
+    .animate-shimmer {
+        animation: shimmer 2s infinite;
+    }
+}

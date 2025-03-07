@@ -26,18 +26,12 @@ const config = {
     csrf: {
       checkOrigin: false,
     },
-    // Add TypeScript configuration to remove deprecated options
+    // Add TypeScript configuration with modern options
     typescript: {
       config: (tsconfig) => {
-        const {
-          // Destructure and remove the deprecated options
-          importsNotUsedAsValues: _,
-          preserveValueImports: __,
-          // Keep the rest of the compiler options
-          ...compilerOptions
-        } = tsconfig.compilerOptions;
+        const compilerOptions = { ...tsconfig.compilerOptions };
 
-        // Ensure ignoreDeprecations is set even in the generated config
+        // Ensure modern options are set
         return {
           ...tsconfig,
           compilerOptions: {

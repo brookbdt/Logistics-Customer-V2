@@ -138,7 +138,7 @@ export const authHook = SvelteKitAuth({
           email: params.token.email,
         },
       });
-      console.log("dbUser", dbUser);
+      // console.log("dbUser", dbUser);
       const dbCustomerData = await prisma.customer.findFirst({
         where: {
           userId: dbUser?.id,

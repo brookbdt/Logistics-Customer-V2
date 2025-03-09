@@ -38,27 +38,64 @@ export async function uploadFile(key: string) {
   return url;
 }
 
-export async function getFile(key: string) {
-  const url = await new Promise<string>((resolve, reject) => {
-    s3.getSignedUrl(
-      "getObject",
-      {
+export async function getFile(key: string): Promise<string> {
+  try {
+    // Strip any query parameters for S3 operations
+    const cleanKey = key.split('?')[0];
+    console.log("Getting file with key:", cleanKey);
+
+    // First check if the object exists
+    try {
+      const headResult = await s3.headObject({
         Bucket: S3_BUCKET_NAME,
-        Key: key,
-        Expires: 3600,
-      },
-      (err, res) => {
-        if (err) {
-          reject(err);
-          // console.log({ FileGetErr: err });
-        } else {
-          resolve(res);
-          // console.log({ FileGetSuc: res });
-        }
+        Key: cleanKey
+      }).promise();
+
+      console.log("File exists, metadata:", headResult);
+    } catch (err) {
+      console.warn("File might not exist:", err);
+      // If the file doesn't exist, return empty string early
+      if ((err as any).code === 'NotFound' || (err as any).statusCode === 404) {
+        console.error("File definitely does not exist in bucket. Key:", cleanKey);
+        return "";
       }
-    );
-  });
-  return url;
+    }
+
+    // Add a timestamp parameter to prevent caching
+    const timestamp = Date.now();
+
+    // Generate signed URL
+    const url = await new Promise<string>((resolve, reject) => {
+      s3.getSignedUrl(
+        "getObject",
+        {
+          Bucket: S3_BUCKET_NAME,
+          Key: cleanKey,
+          Expires: 3600,
+          ResponseCacheControl: 'no-cache'
+        },
+        (err, res) => {
+          if (err) {
+            console.error("Error getting file URL:", err);
+            reject(err);
+          } else {
+            console.log("Generated signed URL:", res);
+            // Add cache-busting
+            const urlWithCache = res.includes('?')
+              ? `${res}&_t=${timestamp}`
+              : `${res}?_t=${timestamp}`;
+            console.log("Returning URL with cache busting:", urlWithCache);
+            resolve(urlWithCache);
+          }
+        }
+      );
+    });
+
+    return url;
+  } catch (error) {
+    console.error("Error in getFile:", error);
+    return "";
+  }
 }
 
 export async function deleteFile(key: string) {

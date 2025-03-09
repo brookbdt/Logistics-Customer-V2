@@ -18,6 +18,7 @@
   export let display: boolean = false;
   export let showSearchBox: boolean = true;
   export let showRoute: boolean = false;
+  export let key: number = 0; // Add key prop for forcing reinitialization
 
   let map: google.maps.Map | null = null;
   let marker: google.maps.Marker | null = null;
@@ -28,7 +29,19 @@
 
   // Function to initialize the map
   async function initMap() {
-    if (!browser || mapInitialized) return;
+    if (!browser) return;
+
+    // Reset if already initialized and forcing reinitialization
+    if (mapInitialized) {
+      // Clean up existing map
+      markers.forEach((marker) => marker.setMap(null));
+      markers = [];
+      if (directionsRenderer) {
+        directionsRenderer.setMap(null);
+      }
+      map = null;
+      mapInitialized = false;
+    }
 
     try {
       // Check if API key is available
@@ -439,6 +452,11 @@
         }
       }
     );
+  }
+
+  // Watch for key changes to reinitialize map
+  $: if (key && browser && !mapInitialized) {
+    initMap();
   }
 
   // Update marker position when lat/lng changes

@@ -837,13 +837,20 @@ export const actions = {
           {
             description: `Pick up from Sender - ${pickUpLocation}`,
             coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse?.id,
+
           },
           {
             description: `Take to drop off - ${dropOffLocation}`,
             coordinates: dropOffMapAddress,
             warehouseId: nearToSenderWarehouse?.id,
           },
-          { description: "Deliver Item" },
+          {
+            description: "Deliver Item",
+            warehouseId: nearToSenderWarehouse?.id,
+
+          },
+
         ];
       } else {
         // Between-cities delivery milestones
@@ -851,6 +858,8 @@ export const actions = {
           {
             description: `Pick up from Sender - ${pickUpLocation}`,
             coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse?.id,
+
           },
           {
             description: "Take to " + nearToSenderWarehouse?.name + " warehouse",
@@ -870,9 +879,9 @@ export const actions = {
           {
             description: `Take to drop off - ${dropOffLocation}`,
             coordinates: dropOffMapAddress,
-            warehouseId: -1,
+            warehouseId: nearToReceiverWarehouse?.id,
           },
-          { description: "Deliver Item", warehouseId: -1 },
+          { description: "Deliver Item", warehouseId: nearToReceiverWarehouse?.id },
         ];
       }
 

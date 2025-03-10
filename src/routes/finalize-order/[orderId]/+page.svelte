@@ -61,7 +61,16 @@
   ];
 
   $: isOrderAccepted = data.orderDetail?.orderStatus === "CLAIMED";
-  $: canProceedToPayment = isOrderAccepted && !data.orderDetail?.paymentStatus;
+  $: canProceedToPayment =
+    (isOrderAccepted && !data.orderDetail?.paymentStatus) ||
+    (data.orderDetail?.paymentOption === "pay_now" &&
+      !data.orderDetail?.paymentStatus);
+  $: showPaymentComponent =
+    canProceedToPayment ||
+    (data.orderDetail?.paymentOption === "pay_now" &&
+      !data.orderDetail?.paymentStatus) ||
+    componentsOrder === 5;
+
   $: estimatedPrice = data.orderDetail?.totalCost || 0;
   $: discountedPrice = applyDiscount
     ? estimatedPrice * (1 - discountAmount)
@@ -73,6 +82,15 @@
   // Automatically set the component order to 4 (review) if the order is not yet accepted
   $: if (!isOrderAccepted && componentsOrder === 5) {
     componentsOrder = 4;
+  }
+
+  // If payment option is pay_now, automatically show payment component
+  $: if (
+    data.orderDetail?.paymentOption === "pay_now" &&
+    !data.orderDetail?.paymentStatus &&
+    componentsOrder !== 5
+  ) {
+    componentsOrder = 5; // Show payment component
   }
 
   let previousOrderStatus = data.orderDetail?.orderStatus;
@@ -1850,7 +1868,84 @@
 
         <!-- Payment Button Section -->
         <div class="my-8">
-          {#if !isOrderAccepted}
+          {#if data.orderDetail?.paymentOption === "pay_now" && !data.orderDetail?.paymentStatus}
+            <!-- Pay Now option - not yet paid -->
+            <div class="space-y-3 w-full max-w-md mx-auto">
+              <div class="text-center text-sm text-gray-600 mb-2">
+                <span
+                  class="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse mr-1"
+                ></span>
+                <span>Complete your payment to finalize your order</span>
+              </div>
+
+              <button
+                on:click={() => (componentsOrder = 5)}
+                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white font-bold py-4 px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+                  />
+                </svg>
+                Complete Payment Now
+              </button>
+
+              <div
+                class="flex items-center justify-center text-xs text-gray-500 mt-2"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-4 w-4 mr-1 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                  />
+                </svg>
+                Secure payment processing
+              </div>
+            </div>
+          {:else if data.orderDetail?.paymentOption === "pay_on_delivery"}
+            <!-- Pay on delivery option -->
+            <div class="flex flex-col items-center">
+              <div
+                class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span
+                  >You've selected to pay on delivery. No payment is required
+                  now.</span
+                >
+              </div>
+            </div>
+          {:else if !isOrderAccepted}
             <div class="flex flex-col items-center">
               <button
                 disabled
@@ -1967,8 +2062,8 @@
       </div>
     {/if}
 
-    <!-- Payment (Step 5) - Only show if order is accepted and not paid -->
-    {#if componentsOrder === 5 && canProceedToPayment}
+    <!-- Payment (Step 5) - Show based on payment option and status -->
+    {#if componentsOrder === 5 && (canProceedToPayment || data.orderDetail?.paymentOption === "pay_now")}
       <div in:fade={{ duration: 300 }}>
         <Payment
           {data}

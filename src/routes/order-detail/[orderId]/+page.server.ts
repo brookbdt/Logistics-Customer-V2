@@ -99,7 +99,13 @@ export const load = async (event) => {
   });
 
   if (orderDetail?.orderStatus === "UNCLAIMED" || !orderDetail?.paymentStatus) {
-    throw redirect(302, `/finalize-order/${orderDetail?.id}`);
+    if (orderDetail?.paymentOption === "pay_now" && orderDetail?.paymentStatus) {
+      // Allow viewing - don't redirect
+    } else if (orderDetail?.paymentOption === "pay_on_delivery") {
+      // Allow viewing - don't redirect
+    } else {
+      throw redirect(302, `/finalize-order/${orderDetail?.id}`);
+    }
   }
 
   const addOrderRatingForm = await superValidate(addOrderRatingSchema);

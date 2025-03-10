@@ -62,6 +62,10 @@
   let estimatedPrice: string | null = null;
   let priceBreakdown: PriceBreakdown | null = null;
 
+  // Payment option that will be sent with form
+  let paymentOption: "pay_now" | "pay_on_acceptance" | "pay_on_delivery" =
+    "pay_on_acceptance";
+
   $: console.log({ receiversInfo });
   $: console.log({ senderInfo });
   $: console.log({ orderType });
@@ -471,9 +475,17 @@
 
           // Check each field exists and has a value
           for (const field of requiredFields) {
-            const element = formElement.elements[field];
-            if (!element || element.value === "") {
-              console.log(`Missing or empty field: ${field}`);
+            const element = formElement.elements.namedItem(field);
+            if (!element) {
+              console.log(`Missing field: ${field}`);
+              missingFields = true;
+              break;
+            }
+
+            // Check if the element has a value property and it's empty
+            // @ts-ignore - Ignore TypeScript error for value property
+            if (element.value === undefined || element.value === "") {
+              console.log(`Empty field: ${field}`);
               missingFields = true;
               break;
             }
@@ -500,10 +512,18 @@
                 "Order created successfully! Your delivery is on its way."
               );
 
-              // Could add a slight delay before redirecting
-              setTimeout(() => {
-                goto("/orders"); // or wherever you want to redirect after success
-              }, 1500);
+              // Redirect based on payment option
+              if (paymentOption === "pay_now" && result.data?.orderId) {
+                // Redirect to payment page for immediate payment
+                setTimeout(() => {
+                  goto(`/finalize-order/${result.data?.orderId}`);
+                }, 1000);
+              } else {
+                // Redirect to orders page for other payment options
+                setTimeout(() => {
+                  goto("/orders");
+                }, 1500);
+              }
             }
           };
         }}
@@ -2018,6 +2038,92 @@
                   >
                     Back
                   </button>
+
+                  <!-- Payment Options Section -->
+                  <div
+                    class="bg-gray-50 p-4 rounded-lg mb-6 border border-gray-200"
+                  >
+                    <h4 class="text-sm font-medium text-gray-800 mb-3">
+                      Payment Options
+                    </h4>
+                    <div class="space-y-3">
+                      <label
+                        class="flex items-center space-x-3 p-3 border rounded-lg border-gray-200 hover:border-secondary cursor-pointer transition-colors {paymentOption ===
+                        'pay_now'
+                          ? 'bg-secondary/10 border-secondary'
+                          : ''}"
+                      >
+                        <input
+                          type="radio"
+                          name="paymentOption"
+                          value="pay_now"
+                          class="text-secondary focus:ring-secondary h-4 w-4"
+                          bind:group={paymentOption}
+                        />
+                        <div>
+                          <p class="font-medium text-sm">Pay now</p>
+                          <p class="text-xs text-gray-500">
+                            Complete payment immediately and get 5% off your
+                            order!
+                          </p>
+                        </div>
+                        <div
+                          class="ml-auto bg-secondary/10 text-secondary text-xs font-medium px-2 py-1 rounded"
+                        >
+                          5% OFF
+                        </div>
+                      </label>
+
+                      <label
+                        class="flex items-center space-x-3 p-3 border rounded-lg border-gray-200 hover:border-secondary cursor-pointer transition-colors {paymentOption ===
+                        'pay_on_acceptance'
+                          ? 'bg-secondary/10 border-secondary'
+                          : ''}"
+                      >
+                        <input
+                          type="radio"
+                          name="paymentOption"
+                          value="pay_on_acceptance"
+                          class="text-secondary focus:ring-secondary h-4 w-4"
+                          bind:group={paymentOption}
+                        />
+                        <div>
+                          <p class="font-medium text-sm">
+                            Pay when order is accepted
+                          </p>
+                          <p class="text-xs text-gray-500">
+                            Pay after a warehouse accepts your order
+                          </p>
+                        </div>
+                      </label>
+
+                      <label
+                        class="flex items-center space-x-3 p-3 border rounded-lg border-gray-200 hover:border-secondary cursor-pointer transition-colors {paymentOption ===
+                        'pay_on_delivery'
+                          ? 'bg-secondary/10 border-secondary'
+                          : ''}"
+                      >
+                        <input
+                          type="radio"
+                          name="paymentOption"
+                          value="pay_on_delivery"
+                          class="text-secondary focus:ring-secondary h-4 w-4"
+                          bind:group={paymentOption}
+                        />
+                        <div>
+                          <p class="font-medium text-sm">Pay on delivery</p>
+                          <p class="text-xs text-gray-500">
+                            Pay when your package is delivered (cash only)
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+                    <input
+                      type="hidden"
+                      name="paymentOption"
+                      value={paymentOption}
+                    />
+                  </div>
 
                   <button
                     type="submit"

@@ -329,6 +329,7 @@ model Order {
   pickUpMapLocation          String
   packageType                PackageType
   paymentStatus              Boolean
+  paymentOption              String?                @default("pay_on_acceptance") // Options: pay_now, pay_on_acceptance, pay_on_delivery
   orderStatus                Order_orderStatus
   dispatchId                 Int?
   createdAt                  DateTime               @default(now())
@@ -961,6 +962,7 @@ enum Order_orderStatus {
   UNCLAIMED
   CLAIMED
   COMPLETED
+  CANCELLED
 }
 
 enum Employee_activityStatus {

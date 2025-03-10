@@ -138,7 +138,16 @@ export const load = async (event) => {
         paymentStatus: true,
       },
     });
-    throw redirect(302, `/order-detail/${orderDetail?.id}`);
+
+    // Check the order status to determine where to redirect
+    // If the order is already claimed, redirect to order details
+    // If the order is unclaimed but has pay_now option, also redirect to order details
+    if (orderDetail?.orderStatus === "CLAIMED" || orderDetail?.paymentOption === "pay_now") {
+      throw redirect(302, `/order-detail/${orderDetail?.id}`);
+    } else {
+      // For other cases, stay on the finalize page
+      throw redirect(302, `/finalize-order/${orderDetail?.id}`);
+    }
   } else {
   }
 
@@ -294,4 +303,62 @@ export let actions = {
 
     return { checkoutUrl, addPaymentForm };
   },
+
+  // New action for bank transfer payments
+  bankTransfer: async (event) => {
+    const addPaymentForm = await superValidate(event.request, addPaymentSchema);
+
+    if (addPaymentForm.errors.phoneNumber) {
+      return fail(500, { addPaymentForm, errorMessage: addPaymentForm.errors });
+    }
+
+    const formData = await event.request.formData();
+    const transactionRef = formData.get("transactionRef") as string;
+
+    // Get the order details
+    const orderDetail = await prisma.order.findFirst({
+      where: {
+        id: Number(event.params.orderId),
+      },
+    });
+
+    if (!orderDetail) {
+      return fail(404, { errorMessage: "Order not found" });
+    }
+
+    try {
+      // Update the order with bank transfer information
+      await prisma.order.update({
+        where: {
+          id: Number(event.params.orderId),
+        },
+        data: {
+          paymentMethod: "BANK_TRANSFER" as any, // Type cast to avoid TypeScript error
+          paymentRef: transactionRef,
+          // Mark as pending verification
+          paymentStatus: false,
+        },
+      });
+
+      // For bank transfers, add a toast message but don't set payment status to true yet
+      // (would be verified manually)
+
+      // If the payment option is "pay_now", redirect to order detail page
+      if (orderDetail.paymentOption === "pay_now") {
+        throw redirect(302, `/order-detail/${orderDetail.id}`);
+      }
+
+      // Return success
+      return {
+        success: true,
+        message: "Bank transfer details submitted successfully. Your payment is pending verification.",
+      };
+    } catch (error) {
+      console.error("Error processing bank transfer:", error);
+      return fail(500, {
+        addPaymentForm,
+        errorMessage: "Failed to process bank transfer. Please try again."
+      });
+    }
+  }
 };

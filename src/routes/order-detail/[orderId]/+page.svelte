@@ -24,10 +24,65 @@
   let driverRateModal = false;
   let ratingOrder: any;
   let ratingDriver: any;
-  let pageLoaded = false;
+  let pageLoaded = true; // Set to true by default for better UX
 
   // Determine if order is completed and can be rated
   $: isOrderCompleted = data.orderDetail?.orderStatus === "COMPLETED";
+
+  // Determine if order is claimed by a warehouse
+  $: isOrderClaimed = data.orderDetail?.orderStatus === "CLAIMED";
+
+  // Determine if order is unclaimed and awaiting warehouse acceptance
+  $: isOrderUnclaimed = data.orderDetail?.orderStatus === "UNCLAIMED";
+
+  // Determine if order is cancelled
+  $: isOrderCancelled = data.orderDetail?.orderStatus === "CANCELLED";
+
+  // Determine payment status
+  $: isOrderPaid = data.orderDetail?.paymentStatus === true;
+
+  // Determine payment option
+  $: paymentOption = data.orderDetail?.paymentOption || "pay_on_acceptance";
+
+  // Determine if this is a pay on delivery order
+  $: isPayOnDelivery = paymentOption === "pay_on_delivery";
+
+  // Helper function to get order status label with color
+  function getOrderStatusDetails() {
+    if (isOrderCompleted) {
+      return {
+        label: "Completed",
+        color: "bg-green-100 text-green-800",
+        icon: "check-circle",
+        message: "Your order has been successfully delivered!",
+      };
+    } else if (isOrderCancelled) {
+      return {
+        label: "Cancelled",
+        color: "bg-red-100 text-red-800",
+        icon: "x-circle",
+        message: "This order has been cancelled.",
+      };
+    } else if (isOrderClaimed) {
+      return {
+        label: "In Progress",
+        color: "bg-blue-100 text-blue-800",
+        icon: "truck",
+        message: isOrderPaid
+          ? "Your payment has been confirmed! Your order is now being processed."
+          : "Your order has been accepted and is awaiting payment.",
+      };
+    } else {
+      return {
+        label: "Pending",
+        color: "bg-yellow-100 text-yellow-800",
+        icon: "clock",
+        message: isOrderPaid
+          ? "Your payment has been confirmed! Your order is awaiting acceptance."
+          : "Your order is awaiting acceptance by our warehouse team.",
+      };
+    }
+  }
 
   // Check if the current user has already rated this order
   $: hasUserRatedOrder = checkIfUserRatedOrder();
@@ -135,9 +190,8 @@
   }
 
   onMount(() => {
-    setTimeout(() => {
-      pageLoaded = true;
-    }, 200);
+    // Additional setup can be done here
+    pageLoaded = true;
   });
 
   $: form?.createOrderRating
@@ -292,6 +346,359 @@
             : ""}
         </p>
 
+        <!-- Enhanced Order Status Display -->
+        {#if data.orderDetail}
+          {@const statusDetails = getOrderStatusDetails()}
+          <div
+            class="w-full max-w-lg mt-6 rounded-xl overflow-hidden shadow-md transition-all duration-300 transform hover:shadow-lg"
+            in:fly={{ y: 20, duration: 700, delay: 400 }}
+          >
+            <div class="p-5 border-b border-gray-100">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center">
+                  <div class="flex-shrink-0">
+                    <span
+                      class="inline-flex items-center justify-center h-10 w-10 rounded-full {statusDetails.color.split(
+                        ' '
+                      )[0]}"
+                    >
+                      {#if statusDetails.icon === "check-circle"}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-6 w-6"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                      {:else if statusDetails.icon === "x-circle"}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-6 w-6"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                      {:else if statusDetails.icon === "truck"}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-6 w-6"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+                          />
+                        </svg>
+                      {:else}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-6 w-6"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                      {/if}
+                    </span>
+                  </div>
+                  <div class="ml-4">
+                    <h3 class="text-lg font-semibold text-gray-900">
+                      Order Status: <span class={statusDetails.color}
+                        >{statusDetails.label}</span
+                      >
+                    </h3>
+                    <p class="text-sm text-gray-600">{statusDetails.message}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Payment Status Section -->
+              <div class="mt-4 pt-3 border-t border-gray-100">
+                <div class="flex justify-between items-center">
+                  <div class="flex items-center space-x-2">
+                    {#if isOrderPaid}
+                      <div class="bg-green-100 p-1 rounded-full">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-4 w-4 text-green-600"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                      </div>
+                      <span class="text-sm font-medium text-green-600"
+                        >Payment Confirmed</span
+                      >
+                    {:else if isPayOnDelivery}
+                      <div class="bg-blue-100 p-1 rounded-full">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-4 w-4 text-blue-600"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
+                          />
+                        </svg>
+                      </div>
+                      <span class="text-sm font-medium text-blue-600"
+                        >Pay on Delivery</span
+                      >
+                    {:else}
+                      <div class="bg-yellow-100 p-1 rounded-full">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="h-4 w-4 text-yellow-600"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                      </div>
+                      <span class="text-sm font-medium text-yellow-600"
+                        >Payment Required</span
+                      >
+                    {/if}
+                  </div>
+
+                  {#if !isOrderPaid && !isPayOnDelivery && !isOrderCancelled}
+                    <a
+                      href="/finalize-order/{data.orderDetail.id}"
+                      class="px-4 py-2 text-sm font-medium text-white bg-secondary rounded-lg hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary transition-colors duration-150"
+                    >
+                      Make Payment
+                    </a>
+                  {/if}
+                </div>
+              </div>
+            </div>
+
+            <!-- Order Timeline / Next Steps -->
+            <div class="p-5 bg-gray-50">
+              {#if isOrderCompleted}
+                <div class="flex items-center text-green-600">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 mr-2"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                  <p class="text-sm font-medium">
+                    Your delivery has been completed successfully!
+                  </p>
+                </div>
+              {:else if isOrderCancelled}
+                <!-- No timeline for cancelled orders -->
+              {:else if isOrderClaimed}
+                <div class="text-sm text-gray-700">
+                  <div class="font-medium mb-2">Next Steps:</div>
+                  <ul class="space-y-2 relative">
+                    <!-- Add vertical progress line that connects the steps -->
+                    <div
+                      class="absolute left-2.5 top-5 h-[calc(100%-20px)] w-0.5 bg-gray-200"
+                    ></div>
+                    <!-- Add progress line overlay to show completed progress -->
+                    <div
+                      class="absolute left-2.5 top-5 w-0.5 bg-secondary"
+                      style="height: 20px; transition: height 0.5s ease;"
+                    ></div>
+
+                    {#if !isOrderPaid && !isPayOnDelivery}
+                      <li class="flex items-start relative z-10">
+                        <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                          <div
+                            class="absolute inset-0 rounded-full bg-secondary/20 animate-ping"
+                          ></div>
+                          <div
+                            class="relative rounded-full h-5 w-5 bg-secondary flex items-center justify-center"
+                          >
+                            <span class="text-white text-xs">1</span>
+                          </div>
+                        </div>
+                        <p class="ml-3 text-secondary font-medium">
+                          Complete your payment to proceed with delivery
+                        </p>
+                      </li>
+                      <li class="flex items-start opacity-50 relative z-10">
+                        <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                          <div
+                            class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                          >
+                            <span class="text-white text-xs">2</span>
+                          </div>
+                        </div>
+                        <p class="ml-3">Warehouse will prepare your package</p>
+                      </li>
+                    {:else}
+                      <li class="flex items-start relative z-10">
+                        <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                          <div
+                            class="absolute inset-0 rounded-full bg-secondary/20 animate-ping"
+                          ></div>
+                          <div
+                            class="relative rounded-full h-5 w-5 bg-secondary flex items-center justify-center"
+                          >
+                            <span class="text-white text-xs">1</span>
+                          </div>
+                        </div>
+                        <p class="ml-3 text-secondary font-medium">
+                          Warehouse is preparing your package
+                        </p>
+                      </li>
+                    {/if}
+                    <li class="flex items-start opacity-50 relative z-10">
+                      <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                        <div
+                          class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                        >
+                          <span class="text-white text-xs"
+                            >{!isOrderPaid && !isPayOnDelivery
+                              ? "3"
+                              : "2"}</span
+                          >
+                        </div>
+                      </div>
+                      <p class="ml-3">Driver will pick up your package</p>
+                    </li>
+                    <li class="flex items-start opacity-50 relative z-10">
+                      <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                        <div
+                          class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                        >
+                          <span class="text-white text-xs"
+                            >{!isOrderPaid && !isPayOnDelivery
+                              ? "4"
+                              : "3"}</span
+                          >
+                        </div>
+                      </div>
+                      <p class="ml-3">
+                        Package will be delivered to your destination
+                      </p>
+                    </li>
+                  </ul>
+                </div>
+              {:else if isOrderUnclaimed}
+                <div class="text-sm text-gray-700">
+                  <div class="font-medium mb-2">Next Steps:</div>
+                  <ul class="space-y-2 relative">
+                    <!-- Add vertical progress line that connects the steps -->
+                    <div
+                      class="absolute left-2.5 top-5 h-[calc(100%-20px)] w-0.5 bg-gray-200"
+                    ></div>
+
+                    <li class="flex items-start relative z-10">
+                      <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                        <div
+                          class="absolute inset-0 rounded-full bg-secondary/20 animate-ping"
+                        ></div>
+                        <div
+                          class="relative rounded-full h-5 w-5 bg-secondary flex items-center justify-center"
+                        >
+                          <span class="text-white text-xs">1</span>
+                        </div>
+                      </div>
+                      <p class="ml-3 text-secondary font-medium">
+                        Awaiting warehouse acceptance
+                      </p>
+                    </li>
+                    {#if !isOrderPaid && !isPayOnDelivery}
+                      <li class="flex items-start opacity-50 relative z-10">
+                        <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                          <div
+                            class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                          >
+                            <span class="text-white text-xs">2</span>
+                          </div>
+                        </div>
+                        <p class="ml-3">Complete payment after acceptance</p>
+                      </li>
+                    {/if}
+                    <li class="flex items-start opacity-50 relative z-10">
+                      <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                        <div
+                          class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                        >
+                          <span class="text-white text-xs"
+                            >{!isOrderPaid && !isPayOnDelivery
+                              ? "3"
+                              : "2"}</span
+                          >
+                        </div>
+                      </div>
+                      <p class="ml-3">Warehouse will prepare your package</p>
+                    </li>
+                    <li class="flex items-start opacity-50 relative z-10">
+                      <div class="flex-shrink-0 h-5 w-5 relative mt-1">
+                        <div
+                          class="relative rounded-full h-5 w-5 bg-gray-300 flex items-center justify-center"
+                        >
+                          <span class="text-white text-xs"
+                            >{!isOrderPaid && !isPayOnDelivery
+                              ? "4"
+                              : "3"}</span
+                          >
+                        </div>
+                      </div>
+                      <p class="ml-3">Driver will deliver your package</p>
+                    </li>
+                  </ul>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         <div
           class="mt-4 px-4 py-1.5 rounded-full shadow-sm {getStatusColor(
             data.orderDetail?.orderStatus
@@ -302,6 +709,226 @@
             >{data.orderDetail?.orderStatus}</span
           >
         </div>
+
+        <!-- Security Information -->
+        <div
+          class="flex flex-wrap justify-center gap-3 mt-6 max-w-md mx-auto"
+          in:fly={{ y: 20, duration: 500, delay: 600 }}
+        >
+          <div
+            class="flex items-center space-x-2 bg-gray-50 px-3 py-2 rounded-full shadow-sm"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4 text-gray-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+              />
+            </svg>
+            <span class="text-xs font-medium text-gray-700"
+              >Secure Delivery</span
+            >
+          </div>
+
+          <div
+            class="flex items-center space-x-2 bg-gray-50 px-3 py-2 rounded-full shadow-sm"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4 text-gray-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              />
+            </svg>
+            <span class="text-xs font-medium text-gray-700">Order Tracking</span
+            >
+          </div>
+
+          <div
+            class="flex items-center space-x-2 bg-gray-50 px-3 py-2 rounded-full shadow-sm"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-4 w-4 text-gray-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <span class="text-xs font-medium text-gray-700"
+              >Real-time Updates</span
+            >
+          </div>
+        </div>
+
+        {#if isOrderUnclaimed && !isOrderPaid && !isPayOnDelivery}
+          <!-- Urgency and Social Proof for Pending Orders -->
+          <div
+            class="mt-6 max-w-md mx-auto bg-gradient-to-r from-orange-50 to-yellow-50 rounded-lg p-4 shadow-sm border border-yellow-100"
+            in:fly={{ y: 20, duration: 500, delay: 700 }}
+          >
+            <div class="flex items-start">
+              <div class="flex-shrink-0">
+                <div class="bg-orange-100 p-2 rounded-full">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-orange-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 10V3L4 14h7v7l9-11h-7z"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <div class="ml-3">
+                <h4 class="text-sm font-medium text-orange-800">
+                  Speed Up Your Delivery!
+                </h4>
+                <p class="text-xs text-orange-700 mt-1">
+                  Orders with early payment get processed 2x faster. Pay now and
+                  move to the front of the processing queue!
+                </p>
+                <div class="mt-3">
+                  <div class="flex items-center text-xs">
+                    <div
+                      class="relative h-1 w-full bg-gray-200 rounded-full overflow-hidden"
+                    >
+                      <div
+                        class="absolute inset-y-0 left-0 bg-orange-400 w-3/4 rounded-full"
+                      ></div>
+                    </div>
+                    <span class="ml-2 text-orange-800 font-medium">75%</span>
+                  </div>
+                  <p class="text-xs text-orange-600 mt-1">
+                    Warehouse capacity is filling up quickly
+                  </p>
+                </div>
+                <div class="mt-2 flex">
+                  <a
+                    href="/finalize-order/{data.orderDetail?.id}"
+                    class="text-xs font-medium text-white bg-orange-500 px-3 py-1.5 rounded hover:bg-orange-600 transition-colors flex items-center"
+                  >
+                    Pay Now
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-3.5 w-3.5 ml-1"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M14 5l7 7m0 0l-7 7m7-7H3"
+                      />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if isOrderClaimed && !isOrderPaid && !isPayOnDelivery}
+          <!-- Social Proof for Claimed Orders -->
+          <div
+            class="mt-6 max-w-md mx-auto bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 shadow-sm border border-blue-100"
+            in:fly={{ y: 20, duration: 500, delay: 700 }}
+          >
+            <div class="flex items-start">
+              <div class="flex-shrink-0">
+                <div class="bg-blue-100 p-2 rounded-full">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-blue-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <div class="ml-3">
+                <h4 class="text-sm font-medium text-blue-800">
+                  Great News! Your Order is Accepted
+                </h4>
+                <p class="text-xs text-blue-700 mt-1">
+                  95% of customers complete payment within 1 hour of acceptance
+                  to ensure fastest delivery.
+                </p>
+                <div class="mt-2 flex items-center">
+                  <div class="flex -space-x-2">
+                    {#each Array(4) as _, i}
+                      <div
+                        class="w-6 h-6 rounded-full bg-gradient-to-br from-blue-200 to-blue-300 border border-white flex items-center justify-center text-xs text-blue-600 font-medium"
+                      >
+                        {["JD", "AM", "SK", "RT"][i]}
+                      </div>
+                    {/each}
+                  </div>
+                  <span class="ml-2 text-xs text-blue-600"
+                    >4 people paid in the last hour</span
+                  >
+                </div>
+                <div class="mt-2 flex">
+                  <a
+                    href="/finalize-order/{data.orderDetail?.id}"
+                    class="text-xs font-medium text-white bg-blue-500 px-3 py-1.5 rounded hover:bg-blue-600 transition-colors flex items-center"
+                  >
+                    Complete Payment
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-3.5 w-3.5 ml-1"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M14 5l7 7m0 0l-7 7m7-7H3"
+                      />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
 
       <!-- Rating Buttons -->

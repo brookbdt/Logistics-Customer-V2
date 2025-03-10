@@ -1,4 +1,3 @@
-
 import { prisma } from "$lib/utils/prisma";
 import { sendMail } from "$lib/utils/send-email.server";
 import type { GoodsType, Order_orderStatus, OrderType, PackageType, PackagingType, Vehicles_vehicleType } from "@prisma/client";
@@ -635,6 +634,8 @@ export const actions = {
     const packagingType = formData.get("packagingType") as string;
     const vehicleTypeInput = formData.get("vehicleType") as string;
 
+    // Get payment option
+    const paymentOption = formData.get("paymentOption") as "pay_now" | "pay_on_acceptance" | "pay_on_delivery" || "pay_on_acceptance";
 
     // Extract weight and dimensions
     const actualWeight = parseFloat(formData.get("actualWeight") as string) || 0.5;
@@ -902,6 +903,7 @@ export const actions = {
         orderStatus: "UNCLAIMED" as Order_orderStatus,
         packageType: packageType as PackageType,
         paymentStatus: false,
+        paymentOption: paymentOption,
         pickUpMapLocation: mapAddress,
         pickUpPhysicalLocation: pickUpLocation,
         dropOffTime: new Date(dropOffTime),
@@ -1026,7 +1028,11 @@ Your order is being processed and will be picked up soon. You can track your ord
         console.log(`Confirmation email sent to sender: ${session.userData.email}`);
       }
 
-      return { newOrder };
+      return {
+        success: true,
+        newOrder: newOrder,
+        orderId: newOrder.id, // Include the order ID for redirection
+      };
     } catch (error) {
       console.error("Error creating order:", error);
       return fail(500, { errorMessage: "Failed to create order: " + (error as Error).message });

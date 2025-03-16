@@ -11,7 +11,6 @@ import { prisma } from "$lib/utils/prisma";
 import jwt from "jsonwebtoken";
 import bcryptjs from 'bcryptjs';
 
-
 if (!GOOGLE_ID) {
   throw new Error("Google Id not found");
 }
@@ -83,10 +82,12 @@ export const authHook = SvelteKitAuth({
   ],
   pages: {
     error: "/auth/signup-error",
+    signIn: "/auth"
   },
   secret: AUTH_SECRET,
   callbacks: {
     signIn: async (params) => {
+      // Check if this is an employee trying to access the customer app
       if (params.account?.provider === "google") {
         if (!params.profile) {
           throw new Error("User in provider in undefined.");

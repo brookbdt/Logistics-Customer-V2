@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { fail } from '@sveltejs/kit';
 import { superValidate } from 'sveltekit-superforms/server';
 import { Resend } from 'resend';
+import { RESEND_API } from '$env/static/private';
 
 // Initialize Resend with API key
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = new Resend(RESEND_API);
 
 // Define the contact form schema with Zod
 const contactSchema = z.object({

@@ -21,6 +21,7 @@
         "@googlemaps/js-api-loader": "1.16.2",
         "@playwright/test": "1.36.1",
         "@prisma/client": "5.22.0",
+        "@sveltejs/adapter-node": "^5.2.12",
         "@sveltejs/adapter-vercel": "3.0.2",
         "@sveltejs/kit": "1.22.3",
         "@turf/turf": "6.5.0",

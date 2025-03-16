@@ -3,6 +3,46 @@ import { redirect } from "@sveltejs/kit";
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 
+
+// Helper function to check if a route is an API route
+function isApiRoute(url: string): boolean {
+    // API routes in SvelteKit typically end with /+server.ts
+    // So the URL patterns would be like /api/endpoint, /some-route/endpoint, etc.
+    // without extensions like .html or trailing slashes
+
+    // Check for mobile app API endpoints
+    const apiEndpoints = [
+        '/active-dispatch',
+        '/assigned-dispatch',
+        '/change-dispatch-status',
+        '/change-order-milestone-status',
+        '/change-order-status',
+        '/chat-members',
+        '/chats',
+        '/courier-login',
+        '/courier-verify',
+        '/create-chat',
+        '/dispatch',
+        '/dispatch-history',
+        '/edit-milestone-order',
+        '/generateSignedUrl',
+        '/get-employees',
+        '/get-user-by-token',
+        '/notifications',
+        '/send-message',
+        '/update-deliver-order-detail',
+        '/update-fcm-token',
+        '/update-location'
+    ];
+
+    // Check if the URL starts with any of the API endpoints
+    return apiEndpoints.some(endpoint =>
+        url === endpoint ||
+        url.startsWith(`${endpoint}/`) ||
+        url.match(new RegExp(`^${endpoint}\\?`))
+    );
+}
+
 // Pre-auth hook to handle basic domain redirects
 const domainHook: Handle = async ({ event, resolve }) => {
     const host = event.request.headers.get('host');
@@ -26,13 +66,25 @@ const sessionHook: Handle = async ({ event, resolve }) => {
     const host = event.request.headers.get('host');
     const url = event.url.pathname;
 
-    // The session is added by the authHook
-    // @ts-ignore - getSession is added by the auth hook
-    const session = await event.locals.getSession?.();
+    // Skip session checks for API routes
+    if (isApiRoute(url)) {
+        return resolve(event);
+    }
 
-    // Handle app subdomain (customer app)
-    if (host?.startsWith('app.behulum.com') && url === '/' && !session) {
-        throw redirect(302, '/auth');
+    try {
+        // The session is added by the authHook
+        const session = await event.locals.getSession();
+
+        // Handle app subdomain (customer app)
+        if (host?.startsWith('app.behulum.com') && url === '/' && !session) {
+            throw redirect(302, '/auth');
+        }
+    } catch (error) {
+        // If getSession fails, we'll just continue for API routes
+        // but log for non-API routes
+        if (!isApiRoute(url)) {
+            console.error('Session check failed:', error);
+        }
     }
 
     return resolve(event);

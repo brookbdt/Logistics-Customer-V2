@@ -1,63 +1,51 @@
 <script lang="ts">
-  import { superForm } from "sveltekit-superforms/client";
   import { toast } from "@zerodevx/svelte-toast";
+  import { superForm } from "sveltekit-superforms/client";
   import { fade } from "svelte/transition";
-  import type { SuperValidated } from "sveltekit-superforms";
-  import type { z } from "zod";
 
-  // Define the interface for our page data
-  interface PageData {
-    contactForm: SuperValidated<
-      z.ZodObject<{
-        name: z.ZodString;
-        email: z.ZodString;
-        phone: z.ZodOptional<z.ZodString>;
-        company: z.ZodOptional<z.ZodString>;
-        service: z.ZodEnum<
-          ["express", "warehouse", "freight", "tracking", "other"]
-        >;
-        message: z.ZodString;
-      }>
-    >;
-  }
-
-  export let data: PageData;
-  export let form: {
-    success?: boolean;
-    error?: string;
-    contactForm?: any;
-  } | null = null;
+  export let data;
+  export let form;
 
   const {
     form: contactForm,
     enhance,
-    errors,
-    constraints,
     submitting,
+    delayed,
+    allErrors,
+    constraints,
     reset,
   } = superForm(data.contactForm, {
     resetForm: true,
     onResult: ({ result }) => {
-      if (result.type === "success") {
-        toast.push("Your message has been sent successfully!", {
+      if (result.type === "success" && result.data?.success) {
+        toast.push("Thank you for your message! We'll get back to you soon.", {
+          duration: 6000,
           theme: {
             "--toastBackground": "#10B981",
             "--toastColor": "white",
           },
         });
-      } else if (result.type === "error") {
-        toast.push(
-          result.error?.message || "An error occurred. Please try again.",
-          {
-            theme: {
-              "--toastBackground": "#EF4444",
-              "--toastColor": "white",
-            },
-          }
-        );
       }
     },
+    onError: ({ result }) => {
+      toast.push("There was an error sending your message. Please try again.", {
+        duration: 6000,
+        theme: {
+          "--toastBackground": "#EF4444",
+          "--toastColor": "white",
+        },
+      });
+    },
   });
+
+  $: for (const error of $allErrors) {
+    toast.push(error.messages.join(" "), {
+      theme: {
+        "--toastBackground": "#EF4444",
+        "--toastColor": "white",
+      },
+    });
+  }
 </script>
 
 <svelte:head>
@@ -94,14 +82,19 @@
         {#if form?.success}
           <div
             class="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded mb-6"
-            in:fade
+            in:fade={{ duration: 300 }}
           >
             <p class="font-medium">Thank you for your message!</p>
             <p>We'll get back to you as soon as possible.</p>
           </div>
         {/if}
 
-        <form method="POST" use:enhance class="space-y-6">
+        <form
+          method="post"
+          action="?/submitContact"
+          use:enhance
+          class="space-y-6"
+        >
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label
@@ -116,11 +109,7 @@
                 bind:value={$contactForm.name}
                 {...$constraints.name}
                 class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary focus:border-primary"
-                class:border-red-500={$errors.name}
               />
-              {#if $errors.name}
-                <p class="text-red-500 text-sm mt-1">{$errors.name}</p>
-              {/if}
             </div>
 
             <div>
@@ -136,11 +125,7 @@
                 bind:value={$contactForm.email}
                 {...$constraints.email}
                 class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary focus:border-primary"
-                class:border-red-500={$errors.email}
               />
-              {#if $errors.email}
-                <p class="text-red-500 text-sm mt-1">{$errors.email}</p>
-              {/if}
             </div>
           </div>
 
@@ -212,11 +197,7 @@
               {...$constraints.message}
               rows="5"
               class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary focus:border-primary"
-              class:border-red-500={$errors.message}
-            />
-            {#if $errors.message}
-              <p class="text-red-500 text-sm mt-1">{$errors.message}</p>
-            {/if}
+            ></textarea>
           </div>
 
           <button
@@ -245,7 +226,7 @@
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 ></path>
               </svg>
-              Sending...
+              {$delayed ? "Sending..." : "Processing..."}
             {:else}
               Send Message
             {/if}

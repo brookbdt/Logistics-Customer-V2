@@ -22,7 +22,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
         // Verify user exists and is a customer
         const customer = await prisma.customer.findUnique({
-            where: { id: session.customerData.id },
+            where: { id: session.userData.id },
 
         });
 

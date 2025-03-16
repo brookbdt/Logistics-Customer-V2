@@ -11,10 +11,11 @@ export const GET: RequestHandler = async ({ locals }) => {
         if (!session) {
             return json({ success: false, message: 'Unauthorized' }, { status: 401 });
         }
+        console.log("session", session);
 
         // Get the customer ID
         const customer = await prisma.customer.findFirst({
-            where: { id: session.customerData.id }
+            where: { id: session.userData.id }
         });
 
         if (!customer) {

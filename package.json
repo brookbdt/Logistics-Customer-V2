@@ -7,6 +7,7 @@
         "dev": "prisma generate && vite dev",
         "build": "prisma generate && vite build && ./fix-dirname-error.sh",
         "preview": "vite preview",
+        "start": "node build/index.js",
         "test": "playwright test",
         "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
         "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

@@ -13,6 +13,8 @@ export async function load(event) {
     event.url.pathname === '/about' ||
     event.url.pathname === '/contact' ||
     event.url.pathname === '/privacy' ||
+    event.url.pathname === '/terms-of-service' ||
+    event.url.pathname === '/privacy-policy' ||
     event.url.pathname === '/terms' ||
     event.url.pathname === '/faq' ||
     event.url.pathname === '/blog' ||

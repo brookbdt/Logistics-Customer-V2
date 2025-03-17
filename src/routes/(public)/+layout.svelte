@@ -41,9 +41,15 @@
     <div class="container mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex justify-between items-center py-4">
         <!-- Logo -->
-        <a href="/" class="flex items-center space-x-2">
-          <span class="text-2xl font-bold text-primary">Behulum</span>
-          <span class="text-xl font-light">Logistics</span>
+        <a href="/" class="flex items-center group transition-all duration-300">
+          <div class="overflow-hidden relative">
+            <img
+              src="https://logistics-bucket.nyc3.cdn.digitaloceanspaces.com/Behulum-Logo.png"
+              alt="Behulum Logo"
+              class="w-auto h-10 sm:h-12 md:h-14 object-contain transition-transform duration-300 group-hover:scale-105"
+              style="max-width: 160px;"
+            />
+          </div>
         </a>
 
         <!-- Desktop Navigation -->
@@ -165,9 +171,20 @@
       <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
         <!-- Company Info -->
         <div class="col-span-1 md:col-span-1">
-          <div class="flex items-center space-x-2 mb-4">
-            <span class="text-xl font-bold text-primary">Behulum</span>
-            <span class="text-lg font-light">Logistics</span>
+          <div class="flex flex-col items-start space-y-3 mb-4">
+            <a href="/" class="group transition-all duration-300">
+              <div class="overflow-hidden relative">
+                <img
+                  src="https://logistics-bucket.nyc3.cdn.digitaloceanspaces.com/Behulum-Logo.png"
+                  alt="Behulum Logo"
+                  class="w-auto h-12 object-contain transition-transform duration-300 group-hover:scale-105 filter brightness-110"
+                  style="max-width: 140px;"
+                />
+              </div>
+            </a>
+            <span class="text-lg font-light text-gray-300"
+              >Transforming Logistics</span
+            >
           </div>
           <p class="text-gray-400 mb-4">
             Transforming logistics in Ethiopia with innovative solutions and

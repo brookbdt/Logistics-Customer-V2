@@ -43,8 +43,8 @@
     class="w-full md:w-1/2 flex flex-col justify-center items-center p-8 md:p-16 text-center md:text-left"
   >
     {#if mounted}
-      <div in:fly={{ y: -20, duration: 800, delay: 200 }}>
-        <Logo class="w-24 h-24 md:w-32 md:h-32 mb-6" />
+      <div in:fly={{ y: -20, duration: 800, delay: 200 }} class="group mb-6">
+        <Logo class="w-40 h-auto md:w-48 md:h-auto" />
       </div>
       <h1
         class="text-4xl md:text-5xl font-bold mb-4 text-gray-800"

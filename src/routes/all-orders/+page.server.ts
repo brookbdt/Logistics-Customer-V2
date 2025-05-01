@@ -1,5 +1,6 @@
 import { prisma } from "$lib/utils/prisma.js";
 import { redirect } from "@sveltejs/kit";
+import { zod } from "sveltekit-superforms/adapters";
 import { superValidate } from "sveltekit-superforms/server";
 import { z } from 'zod';
 
@@ -105,7 +106,7 @@ export const load = async (event) => {
   ]);
 
   // Create form with default values
-  const form = await superValidate(pricingCalculationSchema);
+  const form = await superValidate(zod(pricingCalculationSchema));
 
 
   return {

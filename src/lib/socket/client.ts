@@ -1,0 +1,433 @@
+// Client-side Socket.io implementation for admin app
+import { io, Socket } from 'socket.io-client';
+import { writable, derived } from 'svelte/store';
+import type { Readable } from 'svelte/store';
+
+type Driver = {
+    id: number;
+    isEmployee: boolean;
+    isOnline: boolean;
+    lastSeen: Date;
+    location?: string;
+    orderId?: number;
+};
+
+type Order = any; // Using any type for flexibility with order data structure
+
+type Notification = {
+    id: number;
+    title: string;
+    content: string;
+    createdAt: Date;
+    isRead: boolean;
+    type: string;
+};
+
+// Error handling
+export const socketError = writable<{ message: string, details?: string } | null>(null);
+
+// Define our stores
+export const socket = writable<Socket | null>(null);
+export const isConnected = writable(false);
+export const activeOrders = writable<Order[]>([]);
+export const warehouseOrders = writable<{ [warehouseId: number]: Order[] }>({});
+export const activeDrivers = writable<Driver[]>([]);
+export const notifications = writable<Notification[]>([]);
+export const unreadNotificationCount = derived(
+    notifications,
+    ($notifications) => $notifications.filter(n => !n.isRead).length
+);
+
+// Connection management
+let socketInstance: Socket | null = null;
+let connectionAttempts = 0;
+let currentSocketUrl: string | null = null;
+const MAX_CONNECTION_ATTEMPTS = 5;
+const RETRY_DELAY = 2000; // 2 seconds between retries
+const FALLBACK_PORTS = [4003, 4002, 4001, 4004, 4005]; // Updated to prioritize port 4003
+
+/**
+ * Get the active socket port from the server
+ */
+async function getActiveSocketPort(): Promise<number | null> {
+    try {
+        console.log('Requesting active socket port from server...');
+        const response = await fetch('/socket-port');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.active && data.port) {
+                console.log(`Server reported active socket port: ${data.port}`);
+                return data.port;
+            }
+            console.log('Server reported no active socket server:', data);
+        } else {
+            console.log('Failed to get socket port, status:', response.status);
+        }
+        return null;
+    } catch (error) {
+        console.error('Failed to get active socket port:', error);
+        return null;
+    }
+}
+
+/**
+ * Generate the appropriate socket URL based on environment
+ */
+async function getSocketUrl(): Promise<string> {
+    // In production, use the configured socket URL if available
+    if (import.meta.env.PROD && import.meta.env.VITE_SOCKET_URL) {
+        return import.meta.env.VITE_SOCKET_URL;
+    }
+
+    // For local development with a remote socket server
+    if (import.meta.env.VITE_USE_REMOTE_SOCKET === 'true') {
+        return import.meta.env.VITE_SOCKET_URL || `${window.location.protocol}//${window.location.hostname}:4003`;
+    }
+
+    // Otherwise, try to discover the active port
+    const activePort = await getActiveSocketPort();
+
+    // If we got a port from the server, use it
+    if (activePort) {
+        return `${window.location.protocol}//${window.location.hostname}:${activePort}`;
+    }
+
+    // Directly use port 3005 as default rather than trying FALLBACK_PORTS
+    return `${window.location.protocol}//${window.location.hostname}:3005`;
+}
+
+/**
+ * Initialize socket connection
+ */
+export async function initSocket(url?: string): Promise<Socket | null> {
+    // Only run in browser
+    if (typeof window === 'undefined') return null;
+
+    // Already trying to connect
+    if (socketInstance && !socketInstance.connected && url === currentSocketUrl) {
+        console.log('Already attempting to connect to', url);
+        return socketInstance;
+    }
+
+    // Close existing connection if any
+    if (socketInstance) {
+        console.log('Closing existing socket connection');
+        socketInstance.disconnect();
+        socketInstance.close();
+        socketInstance = null;
+    }
+
+    try {
+        // If no specific URL is provided, get the appropriate URL for the environment
+        if (!url) {
+            console.log('Determining socket URL...');
+            url = await getSocketUrl();
+            console.log('Determined socket URL:', url);
+        }
+
+        currentSocketUrl = url;
+        console.log(`Trying to connect to Socket.io server at ${url}`);
+
+        socketInstance = io(url, {
+            autoConnect: true,
+            reconnection: true,
+            reconnectionAttempts: 3,
+            reconnectionDelay: 1000,
+            timeout: 10000, // 10s timeout
+            transports: ['websocket', 'polling'] // Try WebSocket first, then fall back to polling
+        });
+
+        // Set up event handlers
+        socketInstance.on('connect', () => {
+            console.log('Connected to socket server at:', url);
+            isConnected.set(true);
+            socketError.set(null);
+            connectionAttempts = 0;
+        });
+
+        socketInstance.on('disconnect', (reason) => {
+            console.log('Disconnected from socket server:', reason);
+            isConnected.set(false);
+        });
+
+        socketInstance.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+            isConnected.set(false);
+
+            // Try next port if we've not exceeded max attempts
+            connectionAttempts++;
+
+            if (connectionAttempts <= MAX_CONNECTION_ATTEMPTS) {
+                // Clean up existing connection
+                socketInstance?.disconnect();
+                socketInstance?.close();
+                socketInstance = null;
+
+                // Get next port in sequence
+                const nextPortIndex = connectionAttempts % FALLBACK_PORTS.length;
+                const nextPort = FALLBACK_PORTS[nextPortIndex];
+
+                console.log(`Connection failed, trying port ${nextPort} (attempt ${connectionAttempts})`);
+
+                // Try with next port after a short delay
+                setTimeout(() => {
+                    const nextUrl = `${window.location.protocol}//${window.location.hostname}:${nextPort}`;
+                    initSocket(nextUrl);
+                }, RETRY_DELAY);
+            } else {
+                socketError.set({
+                    message: 'Failed to connect to the real-time server after multiple attempts',
+                    details: error.message
+                });
+                console.log('Real-time functionality disabled after multiple failed attempts');
+            }
+        });
+
+        // Set up message handlers
+        setupMessageHandlers(socketInstance);
+
+        // Update the store
+        socket.set(socketInstance);
+
+        return socketInstance;
+    } catch (error) {
+        console.error('Failed to initialize socket:', error);
+        socketError.set({
+            message: 'Failed to initialize real-time connection',
+            details: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+    }
+}
+
+/**
+ * Subscribe to specific order updates
+ */
+export function subscribeToOrder(orderId: number): void {
+    if (!socketInstance) return;
+    socketInstance.emit('join', `order_${orderId}`);
+}
+
+/**
+ * Subscribe to specific employee updates
+ */
+export function subscribeToEmployee(employeeId: number): void {
+    if (!socketInstance) return;
+    socketInstance.emit('join', `employee_${employeeId}`);
+}
+
+/**
+ * Subscribe to specific warehouse updates
+ */
+export function subscribeToWarehouse(warehouseId: number): void {
+    if (!socketInstance) return;
+    socketInstance.emit('join', `warehouse_${warehouseId}`);
+
+    // Request orders for this warehouse
+    socketInstance.emit('getWarehouseOrders', warehouseId);
+}
+
+/**
+ * Update driver location
+ */
+export function updateDriverLocation(data: {
+    orderId: number,
+    driverId: number,
+    isEmployee: boolean,
+    location: string
+}): void {
+    if (!socketInstance) return;
+    socketInstance.emit('updateDriverLocation', {
+        ...data,
+        timestamp: new Date()
+    });
+}
+
+/**
+ * Update order status
+ */
+export function updateOrderStatus(data: {
+    orderId: number,
+    status: string,
+    updatedBy: number,
+    isEmployee: boolean
+}): void {
+    if (!socketInstance) return;
+    socketInstance.emit('updateOrderStatus', {
+        ...data,
+        timestamp: new Date()
+    });
+}
+
+/**
+ * Send notification
+ */
+export function sendNotification(data: {
+    userId?: number,
+    employeeId?: number,
+    title: string,
+    content: string,
+    type: string,
+    orderId?: number,
+    taskId?: number,
+    ticketId?: number
+}): void {
+    if (!socketInstance) return;
+    socketInstance.emit('sendNotification', data);
+}
+
+/**
+ * Mark notification as read
+ */
+export function markNotificationAsRead(notificationId: number): void {
+    notifications.update(list =>
+        list.map(n => n.id === notificationId ? { ...n, isRead: true } : n)
+    );
+}
+
+/**
+ * Set up message handlers
+ */
+function setupMessageHandlers(socket: Socket): void {
+    // Handle error messages
+    socket.on('error', (data: { message: string, details?: string }) => {
+        console.error('Socket error:', data);
+        socketError.set(data);
+    });
+
+    // Handle active orders data
+    socket.on('activeOrdersData', (data: Order[]) => {
+        console.log('Received active orders data:', data.length);
+        activeOrders.set(data);
+    });
+
+    // New order created
+    socket.on('orderCreated', (data: Order) => {
+        console.log('Received order created event:', data.id);
+        // Update activeOrders store with the new order
+        activeOrders.update(orders => {
+            // Check if the order already exists
+            const exists = orders.some(o => o.id === data.id);
+            if (exists) return orders;
+
+            // Add the new order to the beginning of the list
+            return [data, ...orders];
+        });
+
+        // Create a toast notification about the new order
+        if (typeof window !== 'undefined') {
+            // Could trigger a custom event for toast notification
+            const event = new CustomEvent('new-order', { detail: data });
+            window.dispatchEvent(event);
+        }
+    });
+
+    // Order status updates
+    socket.on('orderStatusUpdated', (data: Order) => {
+        // Update order status for customer orders
+        // Show appropriate notifications based on new status
+        console.log('Received order status update:', data.id, data.orderStatus);
+
+        // Update the order in our active orders store
+        activeOrders.update(orders => {
+            return orders.map(order =>
+                order.id === data.id ? { ...order, orderStatus: data.orderStatus } : order
+            );
+        });
+    });
+
+    // Handle warehouse orders data
+    socket.on('warehouseOrdersData', (data: { warehouseId: number, orders: Order[] }) => {
+        console.log(`Received warehouse orders for warehouse ${data.warehouseId}:`, data.orders.length);
+        warehouseOrders.update(stores => ({
+            ...stores,
+            [data.warehouseId]: data.orders
+        }));
+    });
+
+    // Driver location updates
+    socket.on('locationUpdated', (data: {
+        orderId: number,
+        location: string,
+        driverId: number,
+        isEmployee: boolean,
+        timestamp: Date
+    }) => {
+        activeDrivers.update(drivers => {
+            const index = drivers.findIndex(d =>
+                d.id === data.driverId && d.isEmployee === data.isEmployee
+            );
+
+            if (index >= 0) {
+                // Update existing driver
+                return [
+                    ...drivers.slice(0, index),
+                    {
+                        ...drivers[index],
+                        location: data.location,
+                        lastSeen: data.timestamp,
+                        orderId: data.orderId
+                    },
+                    ...drivers.slice(index + 1)
+                ];
+            } else {
+                // Add new driver
+                return [...drivers, {
+                    id: data.driverId,
+                    isEmployee: data.isEmployee,
+                    isOnline: true,
+                    lastSeen: data.timestamp,
+                    location: data.location,
+                    orderId: data.orderId
+                }];
+            }
+        });
+    });
+
+    // Driver status updates
+    socket.on('driverStatusUpdated', (data: {
+        driverId: number,
+        isEmployee: boolean,
+        isOnline: boolean,
+        timestamp: Date
+    }) => {
+        activeDrivers.update(drivers => {
+            const index = drivers.findIndex(d =>
+                d.id === data.driverId && d.isEmployee === data.isEmployee
+            );
+
+            if (index >= 0) {
+                // Update existing driver
+                return [
+                    ...drivers.slice(0, index),
+                    {
+                        ...drivers[index],
+                        isOnline: data.isOnline,
+                        lastSeen: data.timestamp
+                    },
+                    ...drivers.slice(index + 1)
+                ];
+            } else {
+                // Add new driver
+                return [...drivers, {
+                    id: data.driverId,
+                    isEmployee: data.isEmployee,
+                    isOnline: data.isOnline,
+                    lastSeen: data.timestamp
+                }];
+            }
+        });
+    });
+
+    // New notifications
+    socket.on('newNotification', (data: Notification) => {
+        notifications.update(list => {
+            // Check if notification already exists to avoid duplicates
+            const exists = list.some(n => n.id === data.id);
+            if (exists) return list;
+
+            // Add new notification at the beginning of the list
+            return [data, ...list];
+        });
+    });
+} 

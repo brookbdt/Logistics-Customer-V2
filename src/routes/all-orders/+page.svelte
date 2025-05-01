@@ -28,8 +28,20 @@
     constraints,
   } = superForm(data.form);
   let showPricingCalculator = false;
-  let calculatedPrice = null;
-  let priceBreakdown = null;
+  let calculatedPrice: number | null = null;
+  let priceBreakdown: {
+    baseShippingCost: number;
+    effectiveWeight: number;
+    customerTypeMultiplier: number;
+    orderTypeMultiplier: number;
+    goodsTypeMultiplier: number;
+    premiumTypeMultiplier?: number;
+    multipliedShippingCost: number;
+    packagingCost: number;
+    additionalFees: Array<{ name: string; amount: number }>;
+    totalAdditionalFees: number;
+    totalCost: number;
+  } | null = null;
 
   // Dimensional weight calculation
   $: dimensionalWeight =
@@ -147,7 +159,8 @@
 
       // Calculate total additional fees
       const totalAdditionalFees = additionalFees.reduce(
-        (sum, fee) => sum + fee.amount,
+        (sum: number, fee: { name: string; amount: number }) =>
+          sum + fee.amount,
         0
       );
 
@@ -172,8 +185,7 @@
 
       calculatedPrice = totalCost;
     } catch (error) {
-      toast.push({
-        message: error.message,
+      toast.push(error instanceof Error ? error.message : "Calculation error", {
         theme: {
           "--toastBackground": "#F56565",
           "--toastBarBackground": "#C53030",
@@ -644,15 +656,6 @@
       </div>
     {/if}
 
-    <!-- Customer Support Button -->
-    <a href="/support">
-      <div
-        class="bg-black mb-6 flex gap-3 px-6 w-full justify-center items-center rounded-xl h-12 text-white shadow-sm hover:bg-gray-800 transition-colors"
-      >
-        <CustomerSupport /> Customer Support
-      </div>
-    </a>
-
     <!-- Order History Section -->
     <div class="bg-white rounded-xl shadow-md overflow-hidden mb-6">
       <div class="flex w-full bg-primary/10 p-2">
@@ -722,17 +725,31 @@
                       <p class="text-gray-800 font-bold">
                         Order #{order.id}
                       </p>
-                      <div class="flex items-center">
+                      <div class="flex items-center space-x-2">
                         <span
                           class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                          {order.orderStatus === 'UNCLAIMED'
+                          {order.orderStatus === 'BEING_REVIEWED'
                             ? 'bg-yellow-100 text-yellow-800'
-                            : order.orderStatus === 'CLAIMED'
+                            : order.orderStatus === 'ACCEPTED'
                               ? 'bg-blue-100 text-blue-800'
-                              : 'bg-green-100 text-green-800'}"
+                              : order.orderStatus === 'CANCELLED'
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-green-100 text-green-800'}"
                         >
                           {order.orderStatus.toLowerCase()}
                         </span>
+                        {#if !order.paymentStatus}
+                          <span
+                            class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                            {order.paymentOption === 'pay_on_pickup'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-orange-100 text-orange-800'}"
+                          >
+                            {order.paymentOption === "pay_on_pickup"
+                              ? "Pay on pickup"
+                              : "Receiver pays"}
+                          </span>
+                        {/if}
                       </div>
                     </div>
 
@@ -807,17 +824,29 @@
                       <p class="text-gray-800 font-bold">
                         Order #{order.id}
                       </p>
-                      <div class="flex items-center">
+                      <div class="flex items-center space-x-2">
                         <span
                           class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                      {order.orderStatus === 'UNCLAIMED'
+                          {order.orderStatus === 'BEING_REVIEWED'
                             ? 'bg-yellow-100 text-yellow-800'
-                            : order.orderStatus === 'CLAIMED'
+                            : order.orderStatus === 'ACCEPTED'
                               ? 'bg-blue-100 text-blue-800'
                               : 'bg-green-100 text-green-800'}"
                         >
                           {order.orderStatus.toLowerCase()}
                         </span>
+                        {#if !order.paymentStatus}
+                          <span
+                            class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                            {order.paymentOption === 'pay_on_pickup'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-orange-100 text-orange-800'}"
+                          >
+                            {order.paymentOption === "pay_on_pickup"
+                              ? "Pay on pickup"
+                              : "Receiver pays"}
+                          </span>
+                        {/if}
                       </div>
                     </div>
 
@@ -893,17 +922,29 @@
                 <p class="text-gray-800 font-bold">
                   Order #{form.orderFound.id}
                 </p>
-                <div class="flex items-center">
+                <div class="flex items-center space-x-2">
                   <span
                     class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                {form.orderFound.orderStatus === 'UNCLAIMED'
+                    {form.orderFound.orderStatus === 'BEING_REVIEWED'
                       ? 'bg-yellow-100 text-yellow-800'
-                      : form.orderFound.orderStatus === 'CLAIMED'
+                      : form.orderFound.orderStatus === 'ACCEPTED'
                         ? 'bg-blue-100 text-blue-800'
                         : 'bg-green-100 text-green-800'}"
                   >
                     {form.orderFound.orderStatus.toLowerCase()}
                   </span>
+                  {#if !form.orderFound.paymentStatus}
+                    <span
+                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                      {form.orderFound.paymentOption === 'pay_on_pickup'
+                        ? 'bg-purple-100 text-purple-800'
+                        : 'bg-orange-100 text-orange-800'}"
+                    >
+                      {form.orderFound.paymentOption === "pay_on_pickup"
+                        ? "Pay on pickup"
+                        : "Receiver pays"}
+                    </span>
+                  {/if}
                 </div>
               </div>
 
@@ -951,48 +992,45 @@
       <div class="p-4">
         <h2 class="text-lg font-semibold text-gray-800 mb-3">Quick Actions</h2>
         <div class="grid grid-cols-2 gap-3">
-          <a href="/create-order" class="block">
+          <a href="/support" class="block">
             <div
               class="bg-secondary/10 hover:bg-secondary/20 transition-colors p-4 rounded-lg text-center"
             >
               <div
                 class="bg-secondary/20 w-12 h-12 mx-auto rounded-full flex items-center justify-center mb-2"
               >
-                <Add class="w-6 h-6 text-secondary" />
+                <CustomerSupport class="w-6 h-6 text-secondary" />
               </div>
-              <p class="font-medium text-gray-800">New Order</p>
-              <p class="text-xs text-gray-500">Ship a package</p>
+              <p class="font-medium text-gray-800">Customer Support</p>
+              <p class="text-xs text-gray-500">Get help with orders</p>
             </div>
           </a>
-          <button
-            on:click={() => (showPricingCalculator = !showPricingCalculator)}
+          <a
+            href="https://www.behulum.com"
+            target="_blank"
+            rel="noopener noreferrer"
             class="block w-full"
           >
             <div
-              class="bg-primary/10 hover:bg-primary/20 transition-colors p-4 rounded-lg text-center"
+              class="bg-secondary/10 hover:bg-secondary/20 transition-colors p-4 rounded-lg text-center"
             >
               <div
-                class="bg-primary/20 w-12 h-12 mx-auto rounded-full flex items-center justify-center mb-2"
+                class="bg-secondary/20 w-12 h-12 mx-auto rounded-full flex items-center justify-center mb-2"
               >
                 <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="w-6 h-6 text-primary"
-                  fill="none"
+                  class="w-6 h-6 text-secondary"
+                  fill="currentColor"
                   viewBox="0 0 24 24"
-                  stroke="currentColor"
                 >
                   <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"
                   />
                 </svg>
               </div>
-              <p class="font-medium text-gray-800">Price Calculator</p>
-              <p class="text-xs text-gray-500">Estimate shipping costs</p>
+              <p class="font-medium text-gray-800">Public Website</p>
+              <p class="text-xs text-gray-500">Visit Behulum.com</p>
             </div>
-          </button>
+          </a>
         </div>
       </div>
     </div>

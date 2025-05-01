@@ -2,6 +2,7 @@ import { S3_BUCKET_NAME } from "$env/static/private";
 import { s3, getFile } from "$lib/utils/aws-file.js";
 import { prisma } from "$lib/utils/prisma.js";
 import { error, fail } from "@sveltejs/kit";
+import { zod } from "sveltekit-superforms/adapters";
 import { superValidate } from "sveltekit-superforms/server";
 import { z } from "zod";
 
@@ -40,6 +41,7 @@ export const load = async (event) => {
   }
 
   const customerInformationForm = await superValidate(
+
     {
       userName: data.userName ?? undefined,
       email: data.email,
@@ -50,8 +52,11 @@ export const load = async (event) => {
       physicalAddress: data.Customer?.physicalAddress ?? undefined,
       companyName: data.Customer?.companyName ?? undefined,
       tin: data.Customer?.tinNumber ?? undefined,
-    } satisfies customerInformationType,
-    customerInformationSchema
+    },
+
+    zod(customerInformationSchema),
+
+
   );
 
   // Check if the image exists in S3/R2
@@ -139,7 +144,7 @@ export let actions = {
       (await event.locals.getSession()) as EnhancedSessionType | null;
     const customerInformationForm = await superValidate(
       event.request.clone(),
-      customerInformationSchema
+      zod(customerInformationSchema)
     );
     const data = await event.request.clone().formData();
     const mapAddress = data.get("mapAddress");

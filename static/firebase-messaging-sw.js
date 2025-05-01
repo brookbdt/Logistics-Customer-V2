@@ -54,11 +54,11 @@ self.addEventListener('notificationclick', (event) => {
 
     // If user clicked on the "Proceed to Payment" action button
     if (event.action === 'proceed-to-payment' && data.orderId) {
-        url = `/finalize-order/${data.orderId}`;
+        // url = `/finalize-order/${data.orderId}`;
     }
     // If it's an ORDER_ACCEPTED notification
     else if (data.type === 'ORDER_ACCEPTED' && data.orderId) {
-        url = `/finalize-order/${data.orderId}`;
+        // url = `/finalize-order/${data.orderId}`;
     }
 
     // Focus on existing window or open new one

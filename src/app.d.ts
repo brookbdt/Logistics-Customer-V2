@@ -14,6 +14,7 @@ declare global {
   namespace App {
     interface Locals {
       getSession(): Promise<EnhancedSessionType | null>;
+      notifyNewOrder(orderId: number): Promise<void>;
     }
     interface PageData {
       session: EnhancedSessionType | null;
@@ -21,4 +22,4 @@ declare global {
   }
 }
 
-export {};
+export { };

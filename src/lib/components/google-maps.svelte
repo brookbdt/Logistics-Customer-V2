@@ -18,7 +18,67 @@
   export let display: boolean = false;
   export let showSearchBox: boolean = true;
   export let showRoute: boolean = false;
-  export let key: number = 0; // Add key prop for forcing reinitialization
+  export let mapId: string = "map"; // Default ID, but expect unique ones
+
+  // Export a method to force route recalculation
+  export async function forceRouteUpdate() {
+    console.log("forceRouteUpdate called with:", {
+      mapInitialized,
+      isInitializing,
+      showRoute,
+      hasDirectionsService: !!directionsService,
+      hasDirectionsRenderer: !!directionsRenderer,
+      hasDestination: destinationLat !== 0 && destinationLng !== 0,
+      lat,
+      lng,
+    });
+
+    // If map is not yet initialized, wait a moment and try again
+    if (!map || !mapInitialized) {
+      console.log("Map not initialized yet, waiting...");
+
+      // Wait a short time and try again
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      if (!map || !mapInitialized) {
+        console.log("Map still not initialized after waiting");
+        return;
+      }
+    }
+
+    if (isInitializing) {
+      console.log("Map is initializing, cannot update route yet");
+      return;
+    }
+
+    if (
+      showRoute &&
+      directionsService &&
+      directionsRenderer &&
+      destinationLat !== 0 &&
+      destinationLng !== 0
+    ) {
+      console.log("Force recalculating route");
+
+      // Update marker position first if it exists
+      if (marker) {
+        marker.setPosition({ lat, lng });
+        map.panTo({ lat, lng });
+      }
+
+      // Add a small delay before calculating route to ensure UI updates first
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      calculateAndDisplayRoute();
+    } else {
+      console.log("Cannot recalculate route, missing requirements:", {
+        showRoute,
+        hasDirectionsService: !!directionsService,
+        hasDirectionsRenderer: !!directionsRenderer,
+        hasDestination: destinationLat !== 0 && destinationLng !== 0,
+      });
+    }
+  }
 
   let map: google.maps.Map | null = null;
   let marker: google.maps.Marker | null = null;
@@ -26,22 +86,70 @@
   let mapInitialized = false;
   let directionsRenderer: google.maps.DirectionsRenderer | null = null;
   let directionsService: google.maps.DirectionsService | null = null;
+  let mapElement: HTMLElement | null = null;
+  let isInitializing = false;
+
+  // Add reactive block to update map on lat/lng change
+  $: {
+    if (map && marker && mapInitialized && !isInitializing) {
+      console.log("Reactive statement triggered with lat/lng:", lat, lng);
+
+      // Force update marker position and pan map
+      marker.setPosition({ lat, lng });
+
+      // Use smooth animation for better UX
+      map.panTo({ lat, lng });
+
+      // If marker is significantly off-screen, use setCenter with animation
+      const bounds = map.getBounds();
+      if (bounds) {
+        const latLng = new google.maps.LatLng(lat, lng);
+        if (!bounds.contains(latLng)) {
+          console.log("Marker outside visible area, centering map");
+          map.setCenter({ lat, lng });
+        }
+      }
+    }
+  }
 
   // Function to initialize the map
   async function initMap() {
-    if (!browser) return;
+    if (!browser || isInitializing) return;
 
-    // Reset if already initialized and forcing reinitialization
-    if (mapInitialized) {
-      // Clean up existing map
-      markers.forEach((marker) => marker.setMap(null));
-      markers = [];
-      if (directionsRenderer) {
-        directionsRenderer.setMap(null);
+    // Set initializing flag to prevent multiple concurrent initializations
+    isInitializing = true;
+
+    // If map is already initialized and the map element still exists, just update it
+    if (mapInitialized && map && document.getElementById(mapId)) {
+      // Update marker position and recalculate route if needed
+      if (marker) {
+        marker.setPosition({ lat, lng });
+        map.panTo({ lat, lng });
       }
-      map = null;
-      mapInitialized = false;
+
+      if (
+        showRoute &&
+        directionsService &&
+        directionsRenderer &&
+        destinationLat !== 0 &&
+        destinationLng !== 0
+      ) {
+        calculateAndDisplayRoute();
+      }
+
+      isInitializing = false;
+      return;
     }
+
+    // If we get here, we need to initialize the map from scratch
+    // Clean up existing map objects
+    markers.forEach((marker) => marker.setMap(null));
+    markers = [];
+    if (directionsRenderer) {
+      directionsRenderer.setMap(null);
+    }
+    map = null;
+    mapInitialized = false;
 
     try {
       // Check if API key is available
@@ -105,9 +213,20 @@
           const { Map } = mapsLibrary;
 
           // Check if the map element exists
-          const mapElement = document.getElementById("map");
+          let mapElement = document.getElementById(mapId);
           if (!mapElement) {
-            throw new Error("Map container element not found");
+            // Delay slightly and retry if element not found initially
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            mapElement = document.getElementById(mapId);
+            if (!mapElement) {
+              console.error(
+                `Map container element with id '${mapId}' not found`
+              );
+              isInitializing = false; // Reset flag on failure
+              throw new Error(
+                `Map container element with id '${mapId}' not found`
+              );
+            }
           }
 
           map = new Map(mapElement, {
@@ -158,6 +277,9 @@
           });
 
           console.log("Map initialized successfully");
+
+          // Reset initialization flag
+          isInitializing = false;
         } catch (mapError) {
           console.error("Error creating map:", mapError);
 
@@ -210,6 +332,9 @@
             error: loadError,
           });
         }
+
+        // Reset flag to allow retry
+        isInitializing = false;
       }
     } catch (error) {
       console.error("Error initializing Google Maps:", error);
@@ -217,6 +342,9 @@
         message: "Failed to initialize Google Maps",
         error,
       });
+
+      // Reset flag to allow retry
+      isInitializing = false;
     }
   }
 
@@ -269,16 +397,40 @@
   }
 
   function setupInteractiveMode(map: google.maps.Map) {
-    // Create a draggable marker
+    // Create a draggable marker with custom styling - red for higher visibility
     marker = new google.maps.Marker({
       position: { lat: lat, lng: lng },
       map,
       draggable: true,
       animation: google.maps.Animation.DROP,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 15,
+        fillColor: "#FF0000",
+        fillOpacity: 0.9,
+        strokeColor: "#FFFFFF",
+        strokeWeight: 2,
+        labelOrigin: new google.maps.Point(0, -10),
+      },
+      title: "Drag me to adjust location",
+      zIndex: 999,
     });
 
     // Add marker to the markers array
     markers.push(marker);
+
+    // Add a tooltip to show users they can drag the marker
+    const infoWindow = new google.maps.InfoWindow({
+      content:
+        "<div style='padding:5px;font-size:12px;'>Drag to adjust position</div>",
+      disableAutoPan: true,
+    });
+
+    // Show tooltip briefly when creating the marker
+    if (!display) {
+      infoWindow.open(map, marker);
+      setTimeout(() => infoWindow.close(), 3000);
+    }
 
     // Listen for marker drag events
     marker.addListener("dragend", () => {
@@ -286,24 +438,114 @@
       if (position) {
         lat = position.lat();
         lng = position.lng();
+
+        // Force recalculation of route to update markers
+        if (
+          showRoute &&
+          directionsService &&
+          directionsRenderer &&
+          destinationLat !== 0 &&
+          destinationLng !== 0
+        ) {
+          calculateAndDisplayRoute();
+        }
+
         dispatch("locationChanged", { lat, lng });
+
+        // Show tooltip briefly when dragging ends
+        infoWindow.open(map, marker);
+        setTimeout(() => infoWindow.close(), 2000);
       }
     });
 
-    // Listen for map click events
-    map.addListener("click", (e: google.maps.MapMouseEvent) => {
-      if (e.latLng && marker) {
-        // Update marker position
-        marker.setPosition(e.latLng);
+    // Listen for marker click events
+    marker.addListener("click", () => {
+      // Bounce animation for visual feedback
+      if (marker) {
+        marker.setAnimation(google.maps.Animation.BOUNCE);
+        setTimeout(() => {
+          if (marker) marker.setAnimation(null);
+        }, 1500);
+      }
 
-        // Update coordinates
+      // Show tooltip
+      infoWindow.open(map, marker);
+      setTimeout(() => infoWindow.close(), 4000);
+
+      dispatch("markerClick", { lat, lng });
+    });
+
+    // Listen for map click events - this is what handles the tap location setting
+    map.addListener("click", (e: google.maps.MapMouseEvent) => {
+      if (e.latLng) {
+        if (marker) {
+          // Update marker position
+          marker.setPosition(e.latLng);
+
+          // Add bounce animation for visual feedback
+          marker.setAnimation(google.maps.Animation.BOUNCE);
+          setTimeout(() => {
+            if (marker) marker.setAnimation(null);
+          }, 1500);
+
+          // Show tooltip
+          infoWindow.open(map, marker);
+          setTimeout(() => infoWindow.close(), 3000);
+        }
+
+        // Important: Update internal state variables to match click
         lat = e.latLng.lat();
         lng = e.latLng.lng();
 
-        // Dispatch event
-        dispatch("locationChanged", { lat, lng });
+        // Center map on the new marker position
+        map.panTo(e.latLng);
+
+        // Force recalculation of route to update markers
+        if (
+          showRoute &&
+          directionsService &&
+          directionsRenderer &&
+          destinationLat !== 0 &&
+          destinationLng !== 0
+        ) {
+          calculateAndDisplayRoute();
+        }
+
+        // Dispatch event with the clicked coordinates
+        dispatch("mapClick", {
+          lat: e.latLng.lat(),
+          lng: e.latLng.lng(),
+          nativeEvent: e,
+        });
       }
     });
+
+    // Add a "recenter" button to the map
+    const centerControlDiv = document.createElement("div");
+    centerControlDiv.className =
+      "bg-white shadow-md rounded-full p-2 m-2 cursor-pointer hover:bg-gray-100 transition-colors duration-200";
+    centerControlDiv.title = "Center Map";
+    centerControlDiv.innerHTML = `
+      <div class="flex items-center justify-center w-6 h-6 text-gray-700">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
+        </svg>
+      </div>
+    `;
+
+    centerControlDiv.addEventListener("click", () => {
+      // Center the map on the marker
+      if (marker && marker.getPosition()) {
+        map.panTo(marker.getPosition()!);
+        map.setZoom(15);
+      }
+    });
+
+    // Add the control to the map
+    map.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(
+      centerControlDiv
+    );
   }
 
   function setupSearchBox(map: google.maps.Map) {
@@ -349,6 +591,9 @@
       lat = place.geometry.location.lat();
       lng = place.geometry.location.lng();
 
+      // Make sure map is centered on the new location
+      map.panTo(place.geometry.location);
+
       // Dispatch event with place details
       dispatch("placeSelected", {
         lat,
@@ -387,35 +632,65 @@
       markers.forEach((m) => m.setMap(null));
       markers = [];
 
-      // Create origin marker (green)
+      // Create origin marker with improved styling
       const originMarker = new google.maps.Marker({
         position: origin,
         map,
         icon: {
           url: pickUp,
           scaledSize: new google.maps.Size(40, 40),
+          anchor: new google.maps.Point(20, 40),
+          labelOrigin: new google.maps.Point(20, -10),
         },
-        title: "Pickup Location",
+        label: {
+          text: "Delivery",
+          color: "#1F2937",
+          fontSize: "12px",
+          fontWeight: "bold",
+        },
+        title: "Delivery Location",
+        zIndex: 997,
       });
       markers.push(originMarker);
 
-      // Create destination marker (red)
+      // Create destination marker with improved styling
       const destinationMarker = new google.maps.Marker({
         position: destination,
         map,
         icon: {
           url: dropOffIcon,
           scaledSize: new google.maps.Size(40, 40),
+          anchor: new google.maps.Point(20, 40),
+          labelOrigin: new google.maps.Point(20, -10),
         },
-        title: "Delivery Location",
+        label: {
+          text: "Pickup",
+          color: "#1F2937",
+          fontSize: "12px",
+          fontWeight: "bold",
+        },
+        title: "Pickup Location",
+        zIndex: 998,
       });
       markers.push(destinationMarker);
+
+      // Add click event to destination marker
+      destinationMarker.addListener("click", () => {
+        if (marker) {
+          marker.setPosition(destination);
+          lat = destinationLat;
+          lng = destinationLng;
+          dispatch("markerClick", { lat, lng });
+        }
+      });
 
       // Create bounds to fit both markers
       const bounds = new google.maps.LatLngBounds();
       bounds.extend(origin);
       bounds.extend(destination);
-      map.fitBounds(bounds);
+
+      // Add a little padding around the bounds
+      map.fitBounds(bounds, 50);
     }
 
     directionsService.route(
@@ -454,21 +729,6 @@
     );
   }
 
-  // Watch for key changes to reinitialize map
-  $: if (key && browser && !mapInitialized) {
-    initMap();
-  }
-
-  // Update marker position when lat/lng changes
-  $: if (
-    map &&
-    marker &&
-    (marker.getPosition()?.lat() !== lat || marker.getPosition()?.lng() !== lng)
-  ) {
-    marker.setPosition({ lat, lng });
-    map.panTo({ lat, lng });
-  }
-
   // Recalculate route when coordinates change
   $: if (
     mapInitialized &&
@@ -480,25 +740,56 @@
   ) {
     calculateAndDisplayRoute();
   }
-  $: console.log("markers", markers);
+
   // Initialize map on component mount
   onMount(() => {
-    initMap();
+    // Reset initialization flag to make sure we can initialize the map
+    isInitializing = false;
+
+    // Ensure map div is available at first render
+    const initialMapCheck = setInterval(() => {
+      const mapDiv = document.getElementById(mapId);
+      if (mapDiv && !mapInitialized) {
+        clearInterval(initialMapCheck);
+        initMap();
+      }
+    }, 100);
+
+    // Cleanup timeout in case component gets unmounted before map initializes
+    setTimeout(() => clearInterval(initialMapCheck), 5000);
 
     // Cleanup on component destroy
     return () => {
-      markers.forEach((marker) => marker.setMap(null));
-      markers = [];
-      if (directionsRenderer) {
-        directionsRenderer.setMap(null);
+      clearInterval(initialMapCheck);
+      isInitializing = true; // Prevent new initializations during cleanup
+
+      if (map) {
+        // First clean up all markers to avoid memory leaks
+        markers.forEach((marker) => {
+          if (marker) marker.setMap(null);
+        });
+        markers = [];
+
+        // Clean up directions renderer
+        if (directionsRenderer) {
+          directionsRenderer.setMap(null);
+          directionsRenderer = null;
+        }
+
+        // Clear any other event listeners on the map
+        google.maps.event.clearInstanceListeners(map);
+
+        // Clear the map reference
+        map = null;
       }
-      map = null;
+
       mapInitialized = false;
+      isInitializing = false;
     };
   });
 </script>
 
-<div id="map" class="w-full h-72" />
+<div id={mapId} class="w-full h-72" />
 {#if showSearchBox}
   <input
     id="pac-input"

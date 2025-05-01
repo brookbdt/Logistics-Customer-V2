@@ -6,6 +6,22 @@ import {
     type Messaging
 } from 'firebase/messaging';
 import { browser } from '$app/environment';
+
+import {
+    getDatabase,
+    ref,
+    set,
+    update,
+    push,
+    onValue,
+    onChildAdded,
+    onChildChanged,
+    serverTimestamp,
+    Database,
+    type DatabaseReference,
+    type Unsubscribe
+} from 'firebase/database';
+
 import { prepareVapidKey } from '$lib/utils/vapidKeyUtil';
 
 // Firebase configuration - make sure it matches the service worker configuration
@@ -20,6 +36,7 @@ const firebaseConfig = {
 
 // Initialize Firebase - only in browser environment
 let firebaseApp: FirebaseApp;
+let realtimeDb: Database | undefined;
 let messaging: Messaging;
 
 /**
@@ -63,6 +80,7 @@ export const initializeFirebase = async (): Promise<FirebaseApp> => {
 
     try {
         firebaseApp = getApp();
+        realtimeDb = getDatabase(firebaseApp);
         console.log('Using existing Firebase app instance');
     } catch (e) {
         console.log('Initializing new Firebase app instance');
@@ -166,3 +184,182 @@ export const setupForegroundMessageHandler = async (
         console.error('Error setting up message handler:', error);
     }
 };
+
+
+/**
+ * Get the Firebase Realtime Database instance
+ */
+export async function getRealtimeDb(): Promise<Database | null> {
+    if (!browser) return null;
+
+    try {
+        if (!realtimeDb) {
+            realtimeDb = getDatabase(firebaseApp);
+        }
+        return realtimeDb;
+    } catch (error) {
+        console.error('Error getting Realtime Database:', error);
+        return null;
+    }
+}
+
+/**
+ * Get a reference to a specific path in the Realtime Database
+ */
+export async function getReference(path: string): Promise<DatabaseReference | null> {
+    if (!browser) return null;
+
+    try {
+        const database = await getRealtimeDb();
+        if (!database) return null;
+
+        return ref(database, path);
+    } catch (error) {
+        console.error('Error getting reference:', error);
+        return null;
+    }
+}
+
+/**
+ * Set a value at the specified reference
+ */
+export async function setValue(
+    refPath: string,
+    value: any
+): Promise<boolean> {
+    if (!browser) return false;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return false;
+
+        await set(reference, value);
+        return true;
+    } catch (error) {
+        console.error('Error setting value:', error);
+        return false;
+    }
+}
+
+/**
+ * Update values at the specified reference
+ */
+export async function updateValue(
+    refPath: string,
+    updates: Record<string, any>
+): Promise<boolean> {
+    if (!browser) return false;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return false;
+
+        await update(reference, updates);
+        return true;
+    } catch (error) {
+        console.error('Error updating value:', error);
+        return false;
+    }
+}
+
+/**
+ * Push a value to the specified reference (creates a new child with unique key)
+ */
+export async function pushValue(
+    refPath: string,
+    value: any
+): Promise<string | null> {
+    if (!browser) return null;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return null;
+
+        const newRef = push(reference);
+        await set(newRef, value);
+        return newRef.key;
+    } catch (error) {
+        console.error('Error pushing value:', error);
+        return null;
+    }
+}
+
+/**
+ * Subscribe to value changes at the specified reference
+ */
+export async function subscribeToValue(
+    refPath: string,
+    callback: (snapshot: any) => void
+): Promise<Unsubscribe | null> {
+    if (!browser) return null;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return null;
+
+        return onValue(reference, callback);
+    } catch (error) {
+        console.error('Error subscribing to value:', error);
+        return null;
+    }
+}
+
+/**
+ * Subscribe to child added events at the specified reference
+ */
+export async function subscribeToChildAdded(
+    refPath: string,
+    callback: (snapshot: any) => void
+): Promise<Unsubscribe | null> {
+    if (!browser) return null;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return null;
+
+        return onChildAdded(reference, callback);
+    } catch (error) {
+        console.error('Error subscribing to child added:', error);
+        return null;
+    }
+}
+
+/**
+ * Subscribe to child changed events at the specified reference
+ */
+export async function subscribeToChildChanged(
+    refPath: string,
+    callback: (snapshot: any) => void
+): Promise<Unsubscribe | null> {
+    if (!browser) return null;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return null;
+
+        return onChildChanged(reference, callback);
+    } catch (error) {
+        console.error('Error subscribing to child changed:', error);
+        return null;
+    }
+}
+
+/**
+ * Update the timestamp at the specified reference
+ */
+export async function updateTimestamp(refPath: string): Promise<boolean> {
+    if (!browser) return false;
+
+    try {
+        const reference = await getReference(refPath);
+        if (!reference) return false;
+
+        await update(reference, {
+            lastUpdated: serverTimestamp()
+        });
+        return true;
+    } catch (error) {
+        console.error('Error updating timestamp:', error);
+        return false;
+    }
+}

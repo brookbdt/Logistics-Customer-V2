@@ -10,6 +10,9 @@
   import { onMount } from "svelte";
   // import Barcode from "svelte-barcode";
   import { superForm } from "sveltekit-superforms/client";
+  import { enhance } from "$app/forms";
+  import type { Order_orderStatus } from "@prisma/client";
+  import { subscribeToOrder } from "$lib/socket/client.js";
 
   export let data;
   export let form;
@@ -22,21 +25,24 @@
 
   let orderRateModal = false;
   let driverRateModal = false;
-  let ratingOrder: any;
-  let ratingDriver: any;
+  let ratingOrder: number | null = null;
+  let ratingDriver: number | null = null;
   let pageLoaded = true; // Set to true by default for better UX
 
   // Determine if order is completed and can be rated
-  $: isOrderCompleted = data.orderDetail?.orderStatus === "COMPLETED";
+  $: isOrderCompleted =
+    data.orderDetail?.orderStatus === ORDER_STATUS.COMPLETED;
 
   // Determine if order is claimed by a warehouse
-  $: isOrderClaimed = data.orderDetail?.orderStatus === "CLAIMED";
+  $: isOrderClaimed = data.orderDetail?.orderStatus === ORDER_STATUS.ACCEPTED;
 
   // Determine if order is unclaimed and awaiting warehouse acceptance
-  $: isOrderUnclaimed = data.orderDetail?.orderStatus === "UNCLAIMED";
+  $: isOrderUnclaimed =
+    data.orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED;
 
   // Determine if order is cancelled
-  $: isOrderCancelled = data.orderDetail?.orderStatus === "CANCELLED";
+  $: isOrderCancelled =
+    data.orderDetail?.orderStatus === ORDER_STATUS.CANCELLED;
 
   // Determine payment status
   $: isOrderPaid = data.orderDetail?.paymentStatus === true;
@@ -47,40 +53,103 @@
   // Determine if this is a pay on delivery order
   $: isPayOnDelivery = paymentOption === "pay_on_delivery";
 
+  let showCancellationModal = false;
+  let cancellationReason = "";
+  let isSubmittingCancellation = false;
+
+  // Helper function to check if the order can be cancelled
+  function canCancelOrder() {
+    return (
+      data.orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED ||
+      data.orderDetail?.orderStatus === ORDER_STATUS.WAITING
+    );
+  }
+
+  function openCancellationModal() {
+    showCancellationModal = true;
+  }
+
+  function closeCancellationModal() {
+    showCancellationModal = false;
+    cancellationReason = "";
+  }
+
   // Helper function to get order status label with color
   function getOrderStatusDetails() {
-    if (isOrderCompleted) {
-      return {
-        label: "Completed",
-        color: "bg-green-100 text-green-800",
-        icon: "check-circle",
-        message: "Your order has been successfully delivered!",
-      };
-    } else if (isOrderCancelled) {
-      return {
-        label: "Cancelled",
-        color: "bg-red-100 text-red-800",
-        icon: "x-circle",
-        message: "This order has been cancelled.",
-      };
-    } else if (isOrderClaimed) {
-      return {
-        label: "In Progress",
-        color: "bg-blue-100 text-blue-800",
-        icon: "truck",
-        message: isOrderPaid
-          ? "Your payment has been confirmed! Your order is now being processed."
-          : "Your order has been accepted and is awaiting payment.",
-      };
-    } else {
-      return {
-        label: "Pending",
-        color: "bg-yellow-100 text-yellow-800",
-        icon: "clock",
-        message: isOrderPaid
-          ? "Your payment has been confirmed! Your order is awaiting acceptance."
-          : "Your order is awaiting acceptance by our warehouse team.",
-      };
+    // No need to convert status now
+    const status = data.orderDetail?.orderStatus;
+
+    switch (status) {
+      case ORDER_STATUS.BEING_REVIEWED:
+        return {
+          label: "Being Reviewed",
+          message: "Your order is currently being reviewed by our team.",
+          color: "text-yellow-600 bg-yellow-100",
+          icon: "time",
+        };
+      case ORDER_STATUS.ASSIGNED:
+        return {
+          label: "Assigned",
+          message: "Your order has been assigned to a courier.",
+          color: "text-blue-600 bg-blue-100",
+          icon: "truck",
+        };
+      case ORDER_STATUS.WAITING:
+        return {
+          label: "Waiting",
+          message: "Your order is waiting to be picked up.",
+          color: "text-indigo-600 bg-indigo-100",
+          icon: "time",
+        };
+      case ORDER_STATUS.ACCEPTED:
+        return {
+          label: "Accepted",
+          message: "Your order has been accepted and is being processed.",
+          color: "text-green-600 bg-green-100",
+          icon: "check-circle",
+        };
+      case ORDER_STATUS.IN_TRANSIT:
+        return {
+          label: "In Transit",
+          message: "Your package is on its way to the destination.",
+          color: "text-blue-600 bg-blue-100",
+          icon: "truck",
+        };
+      case ORDER_STATUS.SHIPPED:
+        return {
+          label: "Shipped",
+          message: "Your package has been shipped and is on its way.",
+          color: "text-blue-600 bg-blue-100",
+          icon: "truck",
+        };
+      case ORDER_STATUS.COMPLETED:
+        return {
+          label: "Completed",
+          message: "Your order has been successfully delivered.",
+          color: "text-green-600 bg-green-100",
+          icon: "check-circle",
+        };
+      case ORDER_STATUS.CANCELLED:
+        return {
+          label: "Cancelled",
+          message: "This order has been cancelled.",
+          color: "text-red-600 bg-red-100",
+          icon: "x-circle",
+        };
+      case ORDER_STATUS.RETURNED:
+        return {
+          label: "Returned",
+          message: "This package has been returned to sender.",
+          color: "text-orange-600 bg-orange-100",
+          icon: "x-circle",
+        };
+      default:
+        return {
+          label: status || "Unknown",
+          message: "Status information not available.",
+          color: "text-gray-600 bg-gray-100",
+          icon: "question",
+        };
     }
   }
 
@@ -192,6 +261,7 @@
   onMount(() => {
     // Additional setup can be done here
     pageLoaded = true;
+    subscribeToOrder(data.orderDetail?.id);
   });
 
   $: form?.createOrderRating
@@ -224,7 +294,7 @@
         toast.push("You have already rated this service");
         cancel();
       }
-      formData.set("rating", ratingOrder);
+      formData.set("rating", ratingOrder ? ratingOrder.toString() : "");
       formData.set(
         "customerId",
         JSON.stringify($page.data.session?.customerData.id)
@@ -281,7 +351,7 @@
         }
       }
 
-      formData.set("rating", ratingDriver);
+      formData.set("rating", ratingDriver ? ratingDriver.toString() : "");
       formData.set(
         "customerId",
         JSON.stringify($page.data.session?.customerData.id)
@@ -306,6 +376,19 @@
         return "bg-secondary";
     }
   }
+
+  // Type-safe order status constants
+  const ORDER_STATUS = {
+    BEING_REVIEWED: "BEING_REVIEWED" as Order_orderStatus,
+    WAITING: "WAITING" as Order_orderStatus,
+    ACCEPTED: "ACCEPTED" as Order_orderStatus,
+    CANCELLED: "CANCELLED" as Order_orderStatus,
+    COMPLETED: "COMPLETED" as Order_orderStatus,
+    IN_TRANSIT: "IN_TRANSIT" as Order_orderStatus,
+    RETURNED: "RETURNED" as Order_orderStatus,
+    SHIPPED: "SHIPPED" as Order_orderStatus,
+    ASSIGNED: "ASSIGNED" as Order_orderStatus,
+  };
 </script>
 
 {#if pageLoaded}
@@ -503,14 +586,28 @@
                     {/if}
                   </div>
 
-                  {#if !isOrderPaid && !isPayOnDelivery && !isOrderCancelled}
-                    <a
-                      href="/finalize-order/{data.orderDetail.id}"
-                      class="px-4 py-2 text-sm font-medium text-white bg-secondary rounded-lg hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary transition-colors duration-150"
-                    >
-                      Make Payment
-                    </a>
-                  {/if}
+                  <div class="flex space-x-2">
+                    {#if data.orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED}
+                      <!-- Add Cancel Button -->
+                      <button
+                        on:click={() => {
+                          showCancellationModal = true;
+                        }}
+                        class="px-4 py-2 text-sm font-medium text-white bg-red-500 rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors duration-150"
+                      >
+                        Cancel Order
+                      </button>
+                    {/if}
+
+                    {#if !isOrderPaid && !isPayOnDelivery && !isOrderCancelled}
+                      <a
+                        href="/finalize-order/{data.orderDetail.id}"
+                        class="px-4 py-2 text-sm font-medium text-white bg-secondary rounded-lg hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary transition-colors duration-150"
+                      >
+                        Make Payment
+                      </a>
+                    {/if}
+                  </div>
                 </div>
               </div>
             </div>
@@ -996,7 +1093,7 @@
                 d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
               />
             </svg>
-            <span>Rate Service (Available when completed)</span>
+            <span>Service Rating Available After Delivery</span>
           </div>
         {/if}
 
@@ -1023,26 +1120,6 @@
             <span>Rate Courier</span>
           </button>
         {:else if ratedDrivers.length > 0 && eligibleDrivers.length === 0}
-          <div
-            class="flex items-center justify-center space-x-2 bg-gray-300 text-gray-600 py-3 px-4 rounded-xl cursor-not-allowed"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-              />
-            </svg>
-            <span>No Eligible Couriers Yet</span>
-          </div>
-        {:else if ratedDrivers.length > 0}
           <div
             class="flex items-center justify-center space-x-2 bg-green-100 text-green-700 py-3 px-4 rounded-xl cursor-default"
           >
@@ -1080,7 +1157,7 @@
                 d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
               />
             </svg>
-            <span>No Eligible Couriers Yet</span>
+            <span>Courier Rating Available After Delivery</span>
           </div>
         {/if}
       </div>
@@ -1866,6 +1943,126 @@
           </div>
         </form>
       {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- Cancellation Modal -->
+{#if showCancellationModal}
+  <div
+    class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+    on:click|self={() => {
+      showCancellationModal = false;
+    }}
+    transition:fade={{ duration: 200 }}
+  >
+    <div
+      class="bg-white rounded-xl shadow-xl max-w-md w-full p-6"
+      transition:scale={{ duration: 200, start: 0.95 }}
+    >
+      <h3 class="text-xl font-bold text-gray-800 mb-4">Cancel Your Order</h3>
+      <p class="text-gray-600 mb-4">
+        Are you sure you want to cancel this order? This action cannot be
+        undone.
+      </p>
+      <form
+        method="post"
+        action="?/cancelOrder"
+        use:enhance={() => {
+          isSubmittingCancellation = true;
+
+          return async ({ result }) => {
+            isSubmittingCancellation = false;
+
+            if (result.type === "success" && result.data?.success) {
+              showCancellationModal = false;
+              toast.push("Your order has been successfully cancelled", {
+                theme: {
+                  "--toastBackground": "#10B981",
+                  "--toastBarBackground": "#059669",
+                },
+              });
+              setTimeout(() => window.location.reload(), 1000);
+            } else if (result.type === "success") {
+              toast.push(result.data?.error || "Failed to cancel order", {
+                theme: {
+                  "--toastBackground": "#EF4444",
+                  "--toastBarBackground": "#DC2626",
+                },
+              });
+            } else {
+              toast.push("Failed to cancel order", {
+                theme: {
+                  "--toastBackground": "#EF4444",
+                  "--toastBarBackground": "#DC2626",
+                },
+              });
+            }
+          };
+        }}
+      >
+        <div class="mb-4">
+          <label
+            for="cancellationReason"
+            class="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Reason for Cancellation
+          </label>
+          <textarea
+            id="cancellationReason"
+            name="cancellationReason"
+            bind:value={cancellationReason}
+            required
+            rows="3"
+            class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-secondary"
+            placeholder="Please let us know why you're cancelling this order..."
+          ></textarea>
+        </div>
+
+        <div class="flex justify-end space-x-3 mt-6">
+          <button
+            type="button"
+            class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+            on:click={() => {
+              showCancellationModal = false;
+            }}
+            disabled={isSubmittingCancellation}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center"
+            disabled={!cancellationReason || isSubmittingCancellation}
+          >
+            {#if isSubmittingCancellation}
+              <svg
+                class="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  class="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  stroke-width="4"
+                ></circle>
+                <path
+                  class="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                ></path>
+              </svg>
+              Processing...
+            {:else}
+              Confirm Cancellation
+            {/if}
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 {/if}

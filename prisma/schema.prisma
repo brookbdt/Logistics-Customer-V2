@@ -2,7 +2,6 @@ generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["fullTextIndex", "fullTextSearch"]
   engineType      = "dataproxy"
-
 }
 
 datasource db {
@@ -10,6 +9,15 @@ datasource db {
   url          = env("DATABASE_URL")
   relationMode = "prisma"
 }
+// generator client {
+//   provider        = "prisma-client-js"
+//   previewFeatures = ["fullTextSearch"]
+// }
+
+// datasource db {
+//   provider     = "postgresql"
+//   url          = env("DATABASE_URL")
+// }
 
 model User {
   id            Int            @id @default(autoincrement())
@@ -29,7 +37,7 @@ model User {
   DriverRating  DriverRating[]
   Comments      Comments[]
 
-  @@fulltext([userName, phoneNumber, email])
+  // @@fulltext([userName, phoneNumber, email])
 }
 
 model Employee {
@@ -69,6 +77,7 @@ model Employee {
   Message               Message[]
   ChatMembers           ChatMembers[]
   EmployeeFile          EmployeeFile[]
+  EmployeeNotification  EmployeeNotification[]
 
   @@index([roleId])
   @@index([userId])
@@ -138,20 +147,20 @@ model Vehicles {
 }
 
 model VendorDrivers {
-  id                     Int                      @id @default(autoincrement())
-  createdAt              DateTime                 @default(now())
-  updateAt               DateTime                 @updatedAt
-  deletedAt              DateTime?
-  stationId              Int?
-  isFired                Boolean                  @default(false)
-  activityStatus         Employee_activityStatus
-  hiredDate              DateTime
-  userId                 Int                      @unique
-  roleId                 Int
-  warehouseId            Int?
-  address                String
-  staffIdNumber          String
-  fcmToken               String?
+  id             Int                     @id @default(autoincrement())
+  createdAt      DateTime                @default(now())
+  updateAt       DateTime                @updatedAt
+  deletedAt      DateTime?
+  stationId      Int?
+  isFired        Boolean                 @default(false)
+  activityStatus Employee_activityStatus
+  hiredDate      DateTime
+  userId         Int                     @unique
+  roleId         Int
+  warehouseId    Int?
+  address        String
+  staffIdNumber  String
+  fcmToken       String?
 
   vendorId               Int?
   Vendor                 Vendor?                  @relation(fields: [vendorId], references: [id])
@@ -375,6 +384,8 @@ model Order {
   OrderRating                OrderRating[]
   DriverRating               DriverRating[]
   CustomerNotification       CustomerNotification[]
+  nearToSenderWarehouseId Int?
+
 
   @@index([senderCustomerId])
   @@index([receiverCustomerId])
@@ -443,16 +454,16 @@ model Tracker {
 }
 
 model Dispatch {
-  id                 Int             @id @default(autoincrement())
-  assignedEmployeeId Int?
-  assignedVendorDriverId   Int?
-  createdAt          DateTime        @default(now())
-  updateAt           DateTime        @updatedAt
-  deletedAt          DateTime?
-  AssignedEmployee   Employee?       @relation(fields: [assignedEmployeeId], references: [id])
-  AssignedVendorDriver VendorDrivers? @relation(fields: [assignedVendorDriverId], references: [id])
-  Orders             Order[]
-  OrderDispatches    OrderDispatch[]
+  id                     Int             @id @default(autoincrement())
+  assignedEmployeeId     Int?
+  assignedVendorDriverId Int?
+  createdAt              DateTime        @default(now())
+  updateAt               DateTime        @updatedAt
+  deletedAt              DateTime?
+  AssignedEmployee       Employee?       @relation(fields: [assignedEmployeeId], references: [id])
+  AssignedVendorDriver   VendorDrivers?  @relation(fields: [assignedVendorDriverId], references: [id])
+  Orders                 Order[]
+  OrderDispatches        OrderDispatch[]
 
   @@index([assignedEmployeeId])
   @@index([assignedVendorDriverId])
@@ -483,10 +494,11 @@ model Warehouse {
   Ticket                 Ticket[]
   dailySchedules         DailySchedule[]
   VendorDriverWarehouses VendorDriverWarehouses[]
+  EmployeeNotification   EmployeeNotification[]
+  // @@fulltext([name, mapLocation, phoneNumber])
 
   @@index([vendorId])
   @@index([regionId])
-  @@fulltext([name, mapLocation, phoneNumber])
 }
 
 model DailySchedule {
@@ -551,19 +563,21 @@ model Station {
   selections            Selection[]
   dailySchedulesStation DailyScheduleStation[]
   region                Region?                @relation(fields: [regionId], references: [id])
+  // @@fulltext([name, phoneNumber])
 
   @@index([regionId])
-  @@fulltext([name, phoneNumber])
 }
 
 model Selection {
-  id          Int        @id @default(autoincrement())
-  employeeId  Int
-  warehouseId Int?
-  stationId   Int?
-  employee    Employee   @relation(fields: [employeeId], references: [id])
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
-  station     Station?   @relation(fields: [stationId], references: [id])
+  id                 Int        @id @default(autoincrement())
+  employeeId         Int
+  warehouseId        Int?
+  stationId          Int?
+  isWarehouseManager Boolean    @default(false)
+  isStationManager   Boolean    @default(false)
+  employee           Employee   @relation(fields: [employeeId], references: [id])
+  warehouse          Warehouse? @relation(fields: [warehouseId], references: [id])
+  station            Station?   @relation(fields: [stationId], references: [id])
 
   @@index([warehouseId])
   @@index([stationId])
@@ -874,22 +888,26 @@ model CustomerNotification {
 }
 
 model EmployeeNotification {
-  id         Int      @id @default(autoincrement())
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime
-  employeeId Int
-  title      String
-  content    String
-  isRead     Boolean  @default(false)
-  type       String
-  orderId    Int?
-  taskId     Int?
-  ticketId   Int?
-  metadata   String?
+  id          Int        @id @default(autoincrement())
+  createdAt   DateTime   @default(now())
+  warehouseId Int?
+  updatedAt   DateTime
+  employeeId  Int?
+  title       String
+  content     String
+  isRead      Boolean    @default(false)
+  type        String
+  orderId     Int?
+  taskId      Int?
+  ticketId    Int?
+  metadata    String?
+  Warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  Employee    Employee?  @relation(fields: [employeeId], references: [id])
 
   @@index([employeeId])
   @@index([orderId])
   @@index([taskId])
+  @@index([warehouseId])
   @@index([ticketId])
 }
 
@@ -910,7 +928,6 @@ enum Category {
 enum PackageType {
   PARCEL
   PALLET
-  CONTAINER
 }
 
 enum TaskStatus {
@@ -961,10 +978,15 @@ enum Vehicles_vehicleType {
 }
 
 enum Order_orderStatus {
-  UNCLAIMED
-  CLAIMED
+  BEING_REVIEWED
+  ASSIGNED
+  WAITING
+  ACCEPTED
+  IN_TRANSIT
+  SHIPPED
   COMPLETED
   CANCELLED
+  RETURNED
 }
 
 enum Employee_activityStatus {

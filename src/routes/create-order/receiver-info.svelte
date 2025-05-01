@@ -1,31 +1,108 @@
 <script lang="ts">
-  import { enhance } from "$app/forms";
-  import ArrowRight from "$lib/assets/icons/arrow-right.svg.svelte";
-  import Add from "$lib/assets/shared/add.svg.svelte";
-  import Search from "$lib/assets/shared/search.svg.svelte";
-  import GoogleMaps from "$lib/components/google-maps.svelte";
   import dropOffIcon from "$lib/assets/shared/map/drop-off.svg";
   import pickUp from "$lib/assets/shared/map/pick-up.svg";
-  import { createEventDispatcher, onMount } from "svelte";
-  import type { ActionData } from "./$types";
-  import { fade, fly } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
-  import type { PageData } from "./$types";
-  import { toast } from "@zerodevx/svelte-toast";
+  import Search from "$lib/assets/shared/search.svg.svelte";
+  import GoogleMaps from "$lib/components/google-maps.svelte";
   import {
     calculatePrice,
+    isRouteAvailable as checkPricingRoute,
+    extractCityFromAddress,
+    normalizeCity,
     type PriceBreakdown,
     type PricingParams,
-    normalizeCity,
-    extractCityFromAddress,
-    isRouteAvailable as checkPricingRoute,
   } from "$lib/utils/pricing";
+  import { toast } from "@zerodevx/svelte-toast";
+  import { createEventDispatcher, onMount } from "svelte";
+  import { cubicOut } from "svelte/easing";
+  import { fade, fly } from "svelte/transition";
+  import type { PageData } from "./$types";
+  // Import SuperForm types
+  import type {
+    CreateOrderFormInput,
+    createOrderSchema,
+  } from "$lib/utils/schemas/create-order";
+  import type { SuperValidated } from "sveltekit-superforms";
+  import { dateProxy, superForm } from "sveltekit-superforms/client";
+  import { z } from "zod";
+  import { debounce } from "$lib/utils/debounce";
+  import { goto } from "$app/navigation";
+  import { browser } from "$app/environment";
   import { page } from "$app/stores";
-  let dateInput: any;
 
   let className = "";
-  let lat2: number = 9.01;
-  let lng2: number = 38.74;
+  export { className as class };
+  const dispatch = createEventDispatcher();
+
+  export let data: PageData;
+  // Use SuperForm instead of the local receiversInfo object
+  export let orderForm: ReturnType<typeof superForm<CreateOrderFormInput>>;
+
+  const { form, errors, enhance, constraints, message, submitting } = orderForm;
+  const dropOffDateProxy = dateProxy(form, "dropOffTime", { format: "date" });
+
+  export let lat1: number | null = null;
+  export let lng1: number | null = null;
+
+  // Search functionality variables
+  let searchQuery = "";
+  let isSearching = false;
+  let customerSearchResults: any[] = [];
+  let searchResultVisible = false;
+
+  // Create a debounced search function
+  const debouncedSearch = debounce(async (query: string) => {
+    if (query.length < 2) {
+      customerSearchResults = [];
+      searchResultVisible = false;
+      return;
+    }
+
+    isSearching = true;
+
+    // Update URL with search parameter
+    if (browser) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("searchCustomer", query);
+      goto(url.toString(), { replaceState: true, noScroll: true });
+    }
+  }, 300);
+
+  // Initialize customer search results from page data
+  $: if (data?.customerSearchResults) {
+    customerSearchResults = data.customerSearchResults;
+    searchResultVisible = customerSearchResults.length > 0;
+    isSearching = false;
+
+    if (customerSearchResults.length === 0 && searchQuery.length >= 2) {
+      toast.push("No customers found matching your search", {
+        theme: {
+          "--toastBackground": "#FEF3C7",
+          "--toastBarBackground": "#F59E0B",
+          "--toastColor": "#92400E",
+        },
+      });
+    }
+  }
+
+  // Handle input changes for the search
+  function handleSearchInputChange() {
+    debouncedSearch(searchQuery);
+  }
+
+  // Handle clicks outside the search results to close them
+  function handleSearchResultsClickOutside(event: MouseEvent) {
+    const searchResultsElement = document.querySelector(".search-results");
+    if (
+      searchResultsElement &&
+      !searchResultsElement.contains(event.target as Node)
+    ) {
+      searchResultVisible = false;
+    }
+  }
+
+  // State variables
+  let lat2: number = 8.9864; // Saris, Addis Ababa latitude
+  let lng2: number = 38.7955; // Saris, Addis Ababa longitude
   let locationError: string | null = null;
   let isLoadingLocation = false;
   let addressSearchQuery = "";
@@ -40,100 +117,48 @@
   let placesService: google.maps.places.PlacesService | null = null;
   let autocompleteService: google.maps.places.AutocompleteService | null = null;
   let geocoder: google.maps.Geocoder | null = null;
+  let dateInput: HTMLInputElement;
+
+  // Reference to the GoogleMaps component
+  let googleMapsComponent: any;
 
   // For manual coordinate input
   let manualCoordinates = `${lat2},${lng2}`;
 
-  export { className as class };
-  const dispatch = createEventDispatcher();
-
-  export let form: ActionData | undefined = undefined;
-  export let data: PageData;
-
-  export let receiversInfo: {
-    id: Number;
-    userName: string | null;
-    phoneNumber: string | null;
-    dropOffTime: string | null;
-    dropOffLocation: string | null;
-    dropOffMapLocation: string | null;
-    inCity: string | null;
-    receiverEmail: string | null;
-    originCity?: string;
-    destinationCity?: string;
-    deliveryCity?: string;
-  } = {
-    id: 0,
-    userName: null,
-    phoneNumber: null,
-    dropOffTime: null,
-    dropOffLocation: null,
-    dropOffMapLocation: null,
-    inCity: null,
-    receiverEmail: null,
-  };
-  export let lat1: number | null = null;
-  export let lng1: number | null = null;
-
-  // Add a reactive statement to check if coordinates are available
-  $: if (lat1 && lng1 && lat2 && lng2) {
-    console.log("All coordinates available, determining delivery type");
-    console.log(
-      "Existing city info - originCity:",
-      originCity,
-      "destinationCity:",
-      destinationCity
-    );
-
-    // If we already have city information, we can set the delivery type directly
-    if (originCity && destinationCity) {
-      console.log("Using existing city information to determine delivery type");
-
-      // Set the delivery type based on whether cities are the same
-      if (originCity.toLowerCase() === destinationCity.toLowerCase()) {
-        deliveryType = "IN_CITY";
-        handleRadioChange(0); // Set to in-city
-      } else {
-        // Check if there's a route between these cities
-        const routeAvailable = checkPricingRoute(
-          originCity,
-          destinationCity,
-          data.pricingConfig
-        );
-        if (routeAvailable) {
-          deliveryType = "BETWEEN_CITIES";
-          handleRadioChange(1); // Set to between cities
-        } else {
-          // Fallback to distance-based logic if no route is available
-          if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-            deliveryType = "BETWEEN_CITIES";
-            handleRadioChange(1); // Set to between cities
-          } else {
-            deliveryType = "IN_CITY";
-            handleRadioChange(0); // Set to in-city
-          }
+  // Sync $form.dropOffMapAddress -> lat2, lng2
+  $: {
+    if ($form.dropOffMapAddress) {
+      try {
+        const [latStr, lngStr] = $form.dropOffMapAddress.split(",");
+        const formLat = parseFloat(latStr.trim());
+        const formLng = parseFloat(lngStr.trim());
+        if (
+          !isNaN(formLat) &&
+          !isNaN(formLng) &&
+          (formLat !== lat2 || formLng !== lng2)
+        ) {
+          lat2 = formLat;
+          lng2 = formLng;
+          manualCoordinates = $form.dropOffMapAddress;
+          console.log("Updated lat2/lng2 from form:", lat2, lng2);
         }
+      } catch (e) {
+        console.error(
+          "Error parsing form coordinates:",
+          $form.dropOffMapAddress,
+          e
+        );
       }
-    } else {
-      // If we don't have city information, try to determine it
-      determineDeliveryType();
     }
   }
 
-  let radio: number | null =
-    receiversInfo.inCity !== null
-      ? receiversInfo.inCity === "0"
-        ? 0
-        : 1
-      : null;
+  $: console.log("lat2", lat2);
+  $: console.log("lng2", lng2);
 
-  let searchResultVisible: boolean = false;
-  let searchQuery = "";
-  let isSearching = false;
   export let disableInput = false;
 
   // Validation
-  let errors = {
+  let validationErrors = {
     userName: false,
     phoneNumber: false,
     email: false,
@@ -142,828 +167,192 @@
     dropOffLocation: false,
   };
 
-  $: console.log("errors", errors);
-  $: console.log("receiversInfo", receiversInfo);
+  // Add a function to handle customer selection from search results
+  function handleCustomerSelect(customer: any) {
+    // Close search results
+    searchResultVisible = false;
 
-  function validateForm() {
-    errors = {
-      userName: !receiversInfo.userName,
-      phoneNumber: !receiversInfo.phoneNumber,
-      email:
-        !receiversInfo.receiverEmail ||
-        !receiversInfo.receiverEmail.includes("@"),
-      inCity: false,
-      dropOffTime: !receiversInfo.dropOffTime,
-      dropOffLocation: !receiversInfo.dropOffLocation,
-    };
+    // Update form values with selected customer data
+    $form.receiverUsername = customer.User?.userName || "";
+    $form.receiverPhoneNumber = customer.User?.phoneNumber || "";
+    $form.receiverEmail = customer.User?.email || "";
+    $form.receiverId = customer.id.toString();
 
-    return !Object.values(errors).some(Boolean);
-  }
-
-  $: console.log("receiversInfo", receiversInfo);
-
-  function handleNext() {
-    // Validate required fields
-    let isValid = true;
-    if (!receiversInfo.userName) {
-      errors.userName = true;
-      isValid = false;
-    }
-    if (!receiversInfo.phoneNumber) {
-      errors.phoneNumber = true;
-      isValid = false;
-    }
-    if (!receiversInfo.dropOffTime) {
-      errors.dropOffTime = true;
-      isValid = false;
-    }
-    if (!receiversInfo.dropOffLocation) {
-      errors.dropOffLocation = true;
-      isValid = false;
+    // If customer has address information, use it
+    if (customer.physicalAddress) {
+      $form.dropOffLocation = customer.physicalAddress;
     }
 
-    console.log("isValid 1", isValid);
-    console.log("errors in handleNext 1", errors);
-    console.log("isLocationInServiceArea 1", isLocationInServiceArea);
-    console.log("deliveryType 1", deliveryType);
-
-    // Check if location is in service area
-    if (!isLocationInServiceArea) {
-      isValid = false;
-      if (!locationError) {
-        locationError = "One or both locations are outside our service area.";
-      }
-      return;
-    }
-
-    // Check if we have determined a delivery type and set it if not
-    if (!deliveryType && lat1 && lng1 && lat2 && lng2) {
-      console.log("Setting fallback delivery type in handleNext");
-
-      // Use the same distance-based logic as in determineDeliveryType
-      if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-        deliveryType = "BETWEEN_CITIES";
-        receiversInfo.inCity = "1";
-        console.log("Setting fallback delivery type to BETWEEN_CITIES");
-      } else {
-        deliveryType = "IN_CITY";
-        receiversInfo.inCity = "0";
-        console.log("Setting fallback delivery type to IN_CITY");
-      }
-
-      // Set origin and destination city names if they're not set
-      if (!originCity) originCity = "Addis Ababa";
-      if (!destinationCity)
-        destinationCity =
-          deliveryType === "IN_CITY" ? originCity : "Other City";
-      if (deliveryType === "IN_CITY") deliveryCity = originCity;
-
-      // Store city information in receiversInfo
-      receiversInfo.originCity = originCity;
-      receiversInfo.destinationCity = destinationCity;
-      if (deliveryType === "IN_CITY") receiversInfo.deliveryCity = deliveryCity;
-    }
-
-    // If the delivery type is still not set, show an error
-    if (!deliveryType) {
-      isValid = false;
-      locationError =
-        "Unable to determine delivery type. Please make sure both pickup and delivery locations are properly set.";
-      return;
-    }
-
-    console.log("isValid 2", isValid);
-    console.log("errors in handleNext 2", errors);
-    console.log("deliveryType 2", deliveryType);
-    console.log("receiversInfo.inCity", receiversInfo.inCity);
-
-    if (isValid) {
-      // Ensure price has been calculated
-      if (!calculatedPrice && distanceInKm) {
-        calculateLocalPrice();
-      }
-
-      // Always save the current coordinates in lat,lng format
-      receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-      // Make sure inCity is properly set based on deliveryType
-      receiversInfo.inCity = deliveryType === "IN_CITY" ? "0" : "1";
-      console.log("Final receiversInfo.inCity", receiversInfo.inCity);
-
-      // Ensure city information is stored in receiversInfo
-      receiversInfo.originCity = originCity;
-      receiversInfo.destinationCity = destinationCity;
-      if (deliveryType === "IN_CITY") receiversInfo.deliveryCity = deliveryCity;
-
-      // Pass comprehensive data to the parent component
-      dispatch("next", {
-        distanceInKm,
-        estimatedTimeInMinutes,
-        deliveryType,
-        originCity,
-        destinationCity,
-        calculatedPrice,
-        priceBreakdown,
-        effectiveWeight: priceBreakdown?.effectiveWeight || 0,
-        coordinates: {
-          lat: lat2,
-          lng: lng2,
-        },
-      });
-    }
-  }
-
-  // Get today's date in YYYY-MM-DD format for min date
-  const today = new Date().toISOString().split("T")[0];
-
-  // Handle radio change
-  function handleRadioChange(value: number) {
-    radio = value;
-    receiversInfo.inCity = value.toString();
-  }
-
-  // Try to get user location with fallback
-  function checkLocationPermission(): Promise<boolean> {
-    return new Promise((resolve) => {
-      if (!navigator.permissions) {
-        resolve(true); // Can't check permissions, assume allowed
-        return;
-      }
-
-      navigator.permissions
-        .query({ name: "geolocation" })
-        .then((result) => {
-          resolve(result.state === "granted" || result.state === "prompt");
-        })
-        .catch(() => resolve(true)); // If we can't check, assume allowed
-    });
-  }
-
-  function checkLocationServices(): Promise<boolean> {
-    return new Promise((resolve) => {
-      // Check if geolocation is supported
-      if (!navigator.geolocation) {
-        resolve(false);
-        return;
-      }
-
-      // Try a quick position check
-      navigator.geolocation.getCurrentPosition(
-        () => resolve(true),
-        (error) => {
-          if (error.code === error.PERMISSION_DENIED) {
-            resolve(false);
-          } else {
-            resolve(true); // Other errors might be temporary
-          }
-        },
-        { timeout: 3000, maximumAge: 0 }
-      );
-    });
-  }
-
-  // Replace the existing getUserLocation function with this improved version
-  async function getUserLocation() {
-    isLoadingLocation = true;
-    locationError = null;
-
-    try {
-      // First check if location is available and permitted
-      const [hasPermission, servicesEnabled] = await Promise.all([
-        checkLocationPermission(),
-        checkLocationServices(),
-      ]);
-
-      if (!hasPermission) {
-        throw new Error("Location permission denied");
-      }
-
-      if (!servicesEnabled) {
-        throw new Error("Location services are disabled");
-      }
-
-      // If checks pass, try to get location with improved options
-      const position = await new Promise<GeolocationPosition>(
-        (resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0,
-            // Add these if needed for iOS
-            // @ts-ignore - These are non-standard but supported in iOS
-            webkitEnableHighAccuracy: true,
-            webkitTimeout: 10000,
-          });
-        }
-      );
-
-      // Success - handle the position
-      console.log("Position obtained successfully:", position);
-
-      lat2 = position.coords.latitude;
-      lng2 = position.coords.longitude;
-      // Always store in lat,lng format
-      manualCoordinates = `${lat2},${lng2}`;
-      // Ensure dropOffMapLocation is also updated to maintain consistent format
-      receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-      // Attempt to reverse geocode the coordinates to get an address
-      reverseGeocode(lat2, lng2);
-
-      locationError = null;
-      isLoadingLocation = false;
-
-      // Show success notification if you have one
-      // showLocationNotification("Your current location has been set as the delivery point.");
-    } catch (error) {
-      console.error("Geolocation error:", error);
-
-      // Improved error handling with specific messages
-      if (error instanceof GeolocationPositionError) {
-        switch (error.code) {
-          case error.PERMISSION_DENIED:
-            locationError =
-              "Location access was denied. Please check your browser and system settings.";
-            break;
-          case error.POSITION_UNAVAILABLE:
-            locationError =
-              "Unable to determine your location. Please check if location services are enabled and you have a clear GPS signal.";
-            // Try IP geolocation as fallback
-            await tryIPGeolocation();
-            break;
-          case error.TIMEOUT:
-            locationError = "Location request timed out. Please try again.";
-            // Try IP geolocation as fallback
-            await tryIPGeolocation();
-            break;
-        }
-      } else {
-        locationError =
-          "An unexpected error occurred while getting your location.";
-        await tryIPGeolocation();
-      }
-
-      isLoadingLocation = false;
-    }
-  }
-
-  // Add IP geolocation fallback
-  async function tryIPGeolocation(): Promise<boolean> {
-    try {
-      console.log("Attempting IP-based geolocation...");
-
-      // Try to fetch location from ipapi.co
-      const response = await fetch("https://ipapi.co/json/");
-      if (!response.ok) {
-        throw new Error(`IP geolocation failed: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      console.log("IP geolocation data:", data);
-
-      if (
-        data &&
-        typeof data.latitude === "number" &&
-        typeof data.longitude === "number"
-      ) {
-        // Update coordinates
-        lat2 = data.latitude;
-        lng2 = data.longitude;
-        // Always store in lat,lng format
-        manualCoordinates = `${lat2},${lng2}`;
-        // Ensure dropOffMapLocation is also updated to maintain consistent format
-        receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-        // Attempt to reverse geocode the coordinates to get an address
-        if (geocoder) {
-          reverseGeocode(lat2, lng2);
-        } else {
-          // If geocoder isn't available, use the city from IP data
-          if (data.city) {
-            receiversInfo.dropOffLocation = `${data.city}, ${data.country_name}`;
-          }
-        }
-
-        locationError = null;
-        isLoadingLocation = false;
-
-        return true;
-      } else {
-        throw new Error("IP geolocation returned invalid data");
-      }
-    } catch (error) {
-      console.error("IP geolocation failed:", error);
-
-      // Try alternative IP geolocation service
-      try {
-        console.log("Trying alternative IP geolocation service...");
-        const response = await fetch("https://get.geojs.io/v1/ip/geo.json");
-        if (!response.ok) {
-          throw new Error(
-            `Alternative IP geolocation failed: ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        console.log("Alternative IP geolocation data:", data);
-
-        if (
-          data &&
-          typeof data.latitude === "string" &&
-          typeof data.longitude === "string"
-        ) {
-          // Update coordinates
-          lat2 = parseFloat(data.latitude);
-          lng2 = parseFloat(data.longitude);
-          // Always store in lat,lng format
-          manualCoordinates = `${lat2},${lng2}`;
-          // Ensure dropOffMapLocation is also updated to maintain consistent format
-          receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-          // Attempt to reverse geocode the coordinates to get an address
-          if (geocoder) {
-            reverseGeocode(lat2, lng2);
-          } else if (data.city) {
-            receiversInfo.dropOffLocation = `${data.city}, ${data.country}`;
-          }
-
-          locationError = null;
-          isLoadingLocation = false;
-
-          return true;
-        } else {
-          throw new Error("Alternative IP geolocation returned invalid data");
-        }
-      } catch (altError) {
-        console.error("Alternative IP geolocation failed:", altError);
-        // Use default location as fallback
-        useDefaultLocation();
-        return false;
-      }
-    }
-  }
-
-  // Add default location function
-  function useDefaultLocation(): void {
-    console.log("Using default location (Addis Ababa)");
-
-    // Use Addis Ababa coordinates as fallback
-    lat2 = 9.01;
-    lng2 = 38.74;
-    // Always store in lat,lng format
-    manualCoordinates = `${lat2},${lng2}`;
-    // Ensure dropOffMapLocation is also updated to maintain consistent format
-    receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-    // Attempt to reverse geocode the coordinates to get an address
-    reverseGeocode(lat2, lng2);
-
-    locationError = null;
-    isLoadingLocation = false;
-  }
-
-  function requestGeolocation() {
-    // Set a timeout to handle slow location requests
-    const locationTimeout = setTimeout(() => {
-      if (isLoadingLocation) {
-        isLoadingLocation = false;
-        locationError =
-          "Location request timed out. You can set your location manually.";
-      }
-    }, 10000);
-
-    if (navigator.geolocation) {
-      try {
-        // Try high accuracy first
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            handlePositionSuccess(position, locationTimeout);
-          },
-          (error) => {
-            console.error(
-              "Error getting user location with high accuracy:",
-              error
-            );
-
-            // If high accuracy fails, try again with low accuracy
-            if (error.code === 2) {
-              console.log("Retrying with low accuracy...");
-              navigator.geolocation.getCurrentPosition(
-                (position) => {
-                  handlePositionSuccess(position, locationTimeout);
-                },
-                (finalError) => {
-                  handlePositionError(finalError, locationTimeout);
-                },
-                {
-                  enableHighAccuracy: false,
-                  timeout: 8000,
-                  maximumAge: 60000, // Accept positions up to 1 minute old
-                }
-              );
-            } else {
-              handlePositionError(error, locationTimeout);
-            }
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 8000,
-            maximumAge: 0,
-          }
-        );
-      } catch (e) {
-        clearTimeout(locationTimeout);
-        console.error("Exception when getting location:", e);
-        locationError =
-          "There was an unexpected error accessing your location.";
-        isLoadingLocation = false;
-      }
-    } else {
-      clearTimeout(locationTimeout);
-      locationError =
-        "Geolocation is not supported by your browser. Please enter your location manually.";
-      isLoadingLocation = false;
-    }
-  }
-
-  function handlePositionSuccess(
-    position: GeolocationPosition,
-    timeoutId: ReturnType<typeof setTimeout>
-  ) {
-    clearTimeout(timeoutId);
-    console.log("Location obtained successfully:", position.coords);
-    lat2 = position.coords.latitude;
-    lng2 = position.coords.longitude;
-    manualCoordinates = `${lat2},${lng2}`;
-    // Attempt to reverse geocode the coordinates to get an address
-    reverseGeocode(lat2, lng2);
-    locationError = null;
-    isLoadingLocation = false;
-  }
-
-  function handlePositionError(
-    error: GeolocationPositionError,
-    timeoutId: ReturnType<typeof setTimeout>
-  ) {
-    clearTimeout(timeoutId);
-    console.error("Final error getting user location:", error);
-
-    // Provide helpful error messages based on error code
-    if (error.code === 1) {
-      locationError =
-        "Location access was denied. Please check your browser settings and try again.";
-    } else if (error.code === 2) {
-      locationError =
-        "Your location couldn't be determined. This might be due to:" +
-        "\n• Poor GPS signal (if indoors)" +
-        "\n• Device location services being disabled" +
-        "\n• Browser location permission not being granted" +
-        "\n\nPlease check your device settings and try again, or enter your location manually.";
-    } else if (error.code === 3) {
-      locationError =
-        "Location request timed out. Please try again or enter your location manually.";
-    } else {
-      locationError =
-        "There was an issue accessing your location. Please try again later.";
-    }
-
-    isLoadingLocation = false;
-  }
-
-  // Handle manual coordinate input
-  function updateCoordinatesFromInput() {
-    try {
-      const coords = manualCoordinates
-        .split(",")
-        .map((coord) => parseFloat(coord.trim()));
-
-      if (coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
-        let newLat = coords[0];
-        let newLng = coords[1];
-
-        // Check if coordinates might be reversed (first value outside normal latitude range)
-        if (Math.abs(newLat) > 90 && Math.abs(newLng) <= 90) {
-          // Coordinates are likely reversed (lng,lat format)
-          console.log("Detected reversed coordinates in input, fixing order");
-          const temp = newLat;
-          newLat = newLng;
-          newLng = temp;
-        }
-
-        // Validate the coordinates are in reasonable ranges
-        if (Math.abs(newLat) <= 90 && Math.abs(newLng) <= 180) {
-          lat2 = newLat;
-          lng2 = newLng;
-          // Always store in lat,lng format
-          manualCoordinates = `${lat2},${lng2}`;
-          // Ensure dropOffMapLocation is also updated to maintain consistent format
-          receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-          // Attempt to reverse geocode the coordinates to get an address
-          reverseGeocode(lat2, lng2);
-
-          // Check if location is within service region
-          checkServiceRegion(lat2, lng2);
-        } else {
-          // Invalid range
-          manualCoordinates = `${lat2},${lng2}`;
-        }
-      } else {
-        // Invalid format
-        manualCoordinates = `${lat2},${lng2}`;
-      }
-    } catch (e) {
-      // Reset to current values if parsing fails
-      manualCoordinates = `${lat2},${lng2}`;
-    }
-  }
-
-  // Add a variable to track if the search results should be shown
-  let showSearchResults = false;
-
-  // Function to handle clicks outside the search area
-  function handleClickOutside(event: MouseEvent) {
-    const searchContainer = document.getElementById("addressSearchContainer");
-    if (searchContainer && !searchContainer.contains(event.target as Node)) {
-      showSearchResults = false;
-    }
-  }
-
-  // Add event listener on mount and remove on destroy
-  onMount(() => {
-    // Add click outside listener
-    document.addEventListener("click", handleClickOutside);
-
-    // Initialize Google Maps services if the API is already loaded
-    if (window.google && window.google.maps) {
-      initializeGoogleServices(window.google);
-    }
-
-    // Initialize city information from receiversInfo if available
-    if (receiversInfo.originCity) {
-      originCity = receiversInfo.originCity;
-      console.log("Restored origin city from receiversInfo:", originCity);
-    }
-
-    if (receiversInfo.destinationCity) {
-      destinationCity = receiversInfo.destinationCity;
+    // If customer has map coordinates, use them
+    if (customer.mapAddress) {
+      // Update the form value, the reactive statement will handle the rest
+      $form.dropOffMapAddress = customer.mapAddress;
       console.log(
-        "Restored destination city from receiversInfo:",
-        destinationCity
+        "Set dropOffMapAddress from customer:",
+        $form.dropOffMapAddress
       );
+      // No need for setTimeout or manual parsing/setting of lat2/lng2/manualCoordinates here
     }
 
-    if (receiversInfo.deliveryCity) {
-      deliveryCity = receiversInfo.deliveryCity;
-      console.log("Restored delivery city from receiversInfo:", deliveryCity);
-    }
-
-    // Check if user already has coordinates saved
-    if (
-      receiversInfo.dropOffMapLocation &&
-      receiversInfo.dropOffMapLocation !== ""
-    ) {
-      try {
-        // Parse coordinates from dropOffMapLocation (format: "lat,lng")
-        const coords = receiversInfo.dropOffMapLocation
-          .split(",")
-          .map((coord) => parseFloat(coord.trim()));
-
-        if (coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
-          // Get coordinates from the saved location
-          let savedLat = coords[0];
-          let savedLng = coords[1];
-
-          // Check if coordinates might be reversed (first value outside normal latitude range)
-          if (Math.abs(savedLat) > 90 && Math.abs(savedLng) <= 90) {
-            // Coordinates are likely reversed (lng,lat format)
-            console.log("Detected reversed coordinates, fixing order");
-            const temp = savedLat;
-            savedLat = savedLng;
-            savedLng = temp;
-          }
-
-          // Validate the coordinates are in reasonable ranges
-          if (Math.abs(savedLat) <= 90 && Math.abs(savedLng) <= 180) {
-            // Valid coordinates found in dropOffMapLocation
-            lat2 = savedLat;
-            lng2 = savedLng;
-            // Always store in lat,lng format
-            manualCoordinates = `${lat2},${lng2}`;
-            // Ensure dropOffMapLocation is also updated to maintain consistent format
-            receiversInfo.dropOffMapLocation = `${lat2},${lng2}`;
-
-            console.log(
-              "Using previously saved delivery location:",
-              lat2,
-              lng2
-            );
-
-            // If we have pickup coordinates and city information, determine delivery type
-            if (lat1 && lng1) {
-              // If we have city information, we can determine the delivery type immediately
-              if (originCity && destinationCity) {
-                console.log(
-                  "Using stored city information to determine delivery type"
-                );
-
-                // Set the delivery type based on whether cities are the same
-                if (
-                  originCity.toLowerCase() === destinationCity.toLowerCase()
-                ) {
-                  deliveryType = "IN_CITY";
-                  handleRadioChange(0); // Set to in-city
-                } else {
-                  deliveryType = "BETWEEN_CITIES";
-                  handleRadioChange(1); // Set to between cities
-                }
-              } else {
-                // If we don't have city information, try to determine it
-                determineDeliveryType();
-              }
-            }
-          } else {
-            throw new Error("Coordinates out of valid range");
-          }
-        } else {
-          throw new Error("Invalid coordinate format");
-        }
-      } catch (error) {
-        console.error("Error parsing saved delivery coordinates:", error);
-        // If there's an error parsing the saved coordinates,
-        // we'll keep the current coordinates
-      }
-    }
-
-    return () => {
-      document.removeEventListener("click", handleClickOutside);
-    };
-  });
-  // Update the searchAddress function to show results
-  async function searchAddress() {
-    if (!addressSearchQuery.trim() || !autocompleteService) return;
-
-    isSearchingAddress = true;
-    addressSearchResults = [];
-    showSearchResults = true;
-
-    try {
-      // First search for geocode (addresses)
-      searchForType("geocode");
-
-      // Then search for establishments if needed
-      setTimeout(() => {
-        if (addressSearchResults.length < 3) {
-          searchForType("establishment");
-        } else {
-          // If we already have enough results from geocode, make sure to reset the flag
-          isSearchingAddress = false;
-        }
-
-        // Add a safety timeout to ensure the flag is reset even if something goes wrong
-        setTimeout(() => {
-          isSearchingAddress = false;
-        }, 3000);
-      }, 300);
-    } catch (error) {
-      console.error("Error in place search:", error);
-      isSearchingAddress = false;
-    }
-  }
-
-  // Initialize Google Maps services when the map is ready
-  function initializeGoogleServices(google: any) {
-    if (!directionsService) {
-      directionsService = new google.maps.DirectionsService();
-    }
-  }
-
-  // Extend your existing map ready handler
-  function handleMapReady(event: any) {
-    const { google } = event.detail;
-
-    // Create a dummy div for PlacesService (required but not used directly)
-    const dummyElement = document.createElement("div");
-    placesService = new google.maps.places.PlacesService(dummyElement);
-
-    // Initialize autocomplete service
-    autocompleteService = new google.maps.places.AutocompleteService();
-
-    // Initialize geocoder
-    geocoder = new google.maps.Geocoder();
-
-    // Initialize directions service
-    initializeGoogleServices(google);
-
-    // Remove the code that creates the green marker and polyline
-    // as we're using the directionsRenderer to show the route
-
-    console.log("Google Maps services initialized from map component");
-
-    // Trigger delivery type determination if we have both coordinates
-    if (lat1 && lng1 && lat2 && lng2) {
-      determineDeliveryType();
-    }
+    // Show a success toast
+    toast.push(`Selected ${customer.User?.userName} as receiver`, {
+      theme: {
+        "--toastBackground": "#4ade80",
+        "--toastColor": "#064e3b",
+        "--toastBarBackground": "#10b981",
+      },
+      duration: 3000,
+    });
   }
 
   // Helper function to search for a specific type
   function searchForType(type: "geocode" | "establishment") {
     if (!autocompleteService) {
+      console.error("AutocompleteService not initialized in searchForType");
       isSearchingAddress = false;
       return;
     }
 
+    if (!placesService) {
+      console.error("PlacesService not initialized in searchForType");
+      isSearchingAddress = false;
+      return;
+    }
+
+    console.log(`Searching for ${type} with query: ${addressSearchQuery}`);
+
     const request: google.maps.places.AutocompletionRequest = {
       input: addressSearchQuery,
       types: [type],
-      // Optional: restrict to a specific region
+      // Optional: restrict to a specific region (consider enabling for your region)
       // componentRestrictions: { country: 'et' } // Ethiopia
     };
 
-    autocompleteService.getPlacePredictions(request, (predictions, status) => {
-      if (status === google.maps.places.PlacesServiceStatus.OK && predictions) {
-        // Process each prediction to get details
-        const processedResults = predictions.slice(0, 5); // Limit to 5 results
+    try {
+      autocompleteService.getPlacePredictions(
+        request,
+        (predictions, status) => {
+          console.log(
+            `Autocomplete results for ${type}:`,
+            status,
+            predictions?.length || 0
+          );
 
-        // If no results, reset the flag if this is the last search type
-        if (processedResults.length === 0 && type === "establishment") {
-          isSearchingAddress = false;
-          return;
-        }
+          if (
+            status === google.maps.places.PlacesServiceStatus.OK &&
+            predictions &&
+            predictions.length > 0
+          ) {
+            // Process each prediction to get details
+            const processedResults = predictions.slice(0, 5); // Limit to 5 results
 
-        // For each prediction, get place details to extract coordinates
-        let completedRequests = 0;
-        processedResults.forEach((prediction) => {
-          if (placesService) {
-            placesService.getDetails(
-              { placeId: prediction.place_id },
-              (place, detailsStatus) => {
-                completedRequests++;
+            // If no results, reset the flag if this is the last search type
+            if (processedResults.length === 0 && type === "establishment") {
+              isSearchingAddress = false;
+              return;
+            }
 
-                if (
-                  detailsStatus === google.maps.places.PlacesServiceStatus.OK &&
-                  place &&
-                  place.geometry &&
-                  place.geometry.location
-                ) {
-                  // Check if this place is already in results (avoid duplicates)
-                  const isDuplicate = addressSearchResults.some(
-                    (result) => result.place_id === prediction.place_id
-                  );
+            // For each prediction, get place details to extract coordinates
+            let completedRequests = 0;
+            processedResults.forEach((prediction) => {
+              if (placesService) {
+                placesService.getDetails(
+                  { placeId: prediction.place_id },
+                  (place, detailsStatus) => {
+                    completedRequests++;
+                    console.log(
+                      `Place details for ${prediction.description}:`,
+                      detailsStatus
+                    );
 
-                  if (!isDuplicate) {
-                    // Add to results with coordinates
-                    addressSearchResults = [
-                      ...addressSearchResults,
-                      {
-                        place_id: prediction.place_id,
-                        description: prediction.description,
-                        address:
-                          place.formatted_address || prediction.description,
-                        lat: place.geometry.location.lat(),
-                        lng: place.geometry.location.lng(),
-                      },
-                    ];
+                    if (
+                      detailsStatus ===
+                        google.maps.places.PlacesServiceStatus.OK &&
+                      place &&
+                      place.geometry &&
+                      place.geometry.location
+                    ) {
+                      // Check if this place is already in results (avoid duplicates)
+                      const isDuplicate = addressSearchResults.some(
+                        (result) => result.place_id === prediction.place_id
+                      );
+
+                      if (!isDuplicate) {
+                        // Add to results with coordinates
+                        addressSearchResults = [
+                          ...addressSearchResults,
+                          {
+                            place_id: prediction.place_id,
+                            description: prediction.description,
+                            address:
+                              place.formatted_address || prediction.description,
+                            lat: place.geometry.location.lat(),
+                            lng: place.geometry.location.lng(),
+                          },
+                        ];
+                      }
+                    } else {
+                      console.warn(
+                        `Failed to get details for ${prediction.description}:`,
+                        detailsStatus
+                      );
+                    }
+
+                    // If this is the last request and the last search type, reset the flag
+                    if (
+                      completedRequests === processedResults.length &&
+                      type === "establishment"
+                    ) {
+                      isSearchingAddress = false;
+                    }
                   }
-                }
-
-                // If this is the last request and the last search type, reset the flag
-                if (
-                  completedRequests === processedResults.length &&
-                  type === "establishment"
-                ) {
-                  isSearchingAddress = false;
-                }
+                );
               }
-            );
-          }
-        });
-      } else {
-        // No results or error
-        if (status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
-          console.error(`Place Autocomplete failed for type ${type}:`, status);
-        }
+            });
+          } else {
+            // No results or error
+            if (
+              status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS
+            ) {
+              console.error(
+                `Place Autocomplete failed for type ${type}:`,
+                status
+              );
+            } else {
+              console.log(`No results found for ${type} search`);
+            }
 
-        // Reset the flag if this is the last search type
-        if (type === "establishment") {
-          isSearchingAddress = false;
+            // Reset the flag if this is the last search type
+            if (type === "establishment") {
+              isSearchingAddress = false;
+            }
+          }
         }
+      );
+    } catch (error) {
+      console.error(`Error in searchForType(${type}):`, error);
+      if (type === "establishment") {
+        isSearchingAddress = false;
       }
-    });
+    }
   }
 
   // Select an address from search results
-  function selectAddress(result: {
+  async function selectAddress(result: {
     place_id: string;
     description: string;
     address: string;
     lat: number;
     lng: number;
   }) {
+    // Update lat2/lng2 directly, reactivity will update the form
     lat2 = result.lat;
     lng2 = result.lng;
-    manualCoordinates = `${lat2},${lng2}`;
-    receiversInfo.dropOffLocation = result.address;
+    $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+    $form.dropOffLocation = result.address;
+
+    // Force route recalculation
+    if (googleMapsComponent) await googleMapsComponent.forceRouteUpdate();
 
     // Reverse geocode to get city information and check service region
     reverseGeocode(lat2, lng2);
@@ -971,15 +360,37 @@
     // Check if location is within service region
     checkServiceRegion(lat2, lng2);
 
-    addressSearchResults = []; // Clear results after selection
-    isSearchingAddress = false; // Reset the searching flag
-    showSearchResults = false; // Hide search results
+    addressSearchResults = [];
+    isSearchingAddress = false;
+    showSearchResults = false;
   }
 
   // Real implementation of reverse geocoding using Google Geocoder
   function reverseGeocode(latitude: number, longitude: number) {
     if (!geocoder) {
       console.error("Geocoder not initialized");
+      // Set fallback address format using coordinates when geocoder isn't available
+      $form.dropOffLocation = `Location at coordinates ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      // Still ensure the dropOffMapAddress is set correctly
+      $form.dropOffMapAddress = `${latitude},${longitude}`;
+      // Use "Addis Ababa" as default city for destination
+      destinationCity = "Addis Ababa";
+      $form.destinationCity = "Addis Ababa";
+
+      // Mark location as in service area since we're using a default service city
+      isLocationInServiceArea = true;
+      locationError = null;
+
+      // Show notification about using coordinates
+      toast.push("Using coordinates as dropoff point (geocoder unavailable)", {
+        theme: {
+          "--toastBackground": "#D1FAE5",
+          "--toastBarBackground": "#10B981",
+          "--toastColor": "#065F46",
+        },
+        duration: 4000,
+      });
+
       return;
     }
 
@@ -995,7 +406,7 @@
       if (status === "OK" && results && results.length > 0) {
         // Get the most detailed result
         const address = results[0].formatted_address;
-        receiversInfo.dropOffLocation = address;
+        $form.dropOffLocation = address;
 
         // Extract city information from address components
         let city = null;
@@ -1031,7 +442,7 @@
         // Check if the city is in our pricing config
         if (city) {
           destinationCity = city;
-          receiversInfo.destinationCity = city; // Store in receiversInfo
+          $form.destinationCity = city; // Store in form
           console.log("city in receiver-info", city);
           // Check if this city is in our pricing config
           const cityInConfig = checkCityInPricingConfig(city);
@@ -1042,15 +453,14 @@
             if (nearbyCity) {
               console.log("Using nearby configured city:", nearbyCity);
               destinationCity = nearbyCity;
-              receiversInfo.destinationCity = nearbyCity;
+              $form.destinationCity = nearbyCity;
               locationError = null;
               isLocationInServiceArea = true;
             } else {
               locationError = `We don't currently service ${city} for delivery. Please select a location within our service areas.`;
               isLocationInServiceArea = false;
               // Update UI to show the location is outside service area
-              receiversInfo.dropOffLocation =
-                address + " (Outside service area)";
+              $form.dropOffLocation = address + " (Outside service area)";
             }
           } else {
             locationError = null;
@@ -1060,7 +470,7 @@
             const exactCityName = getServiceCityName(city);
             if (exactCityName) {
               destinationCity = exactCityName;
-              receiversInfo.destinationCity = exactCityName; // Store in receiversInfo
+              $form.destinationCity = exactCityName; // Store in form
             }
 
             // If we have both origin and destination cities, determine delivery type
@@ -1074,12 +484,12 @@
           if (nearbyCity) {
             console.log("Found nearest city:", nearbyCity);
             destinationCity = nearbyCity;
-            receiversInfo.destinationCity = nearbyCity;
+            $form.destinationCity = nearbyCity;
             locationError = null;
             isLocationInServiceArea = true;
 
             // Update UI with the city we found
-            receiversInfo.dropOffLocation = `${address} (Near ${nearbyCity})`;
+            $form.dropOffLocation = `${address} (Near ${nearbyCity})`;
 
             // If we have both origin and destination cities, determine delivery type
             if (originCity && destinationCity) {
@@ -1090,25 +500,145 @@
             locationError =
               "Could not determine city from this location. Please select a location within our service areas.";
             isLocationInServiceArea = false;
-            receiversInfo.dropOffLocation = address + " (City not recognized)";
+            $form.dropOffLocation = address + " (City not recognized)";
           }
         }
       } else {
         console.error("Geocoder failed due to: " + status);
         // Fallback to coordinates if geocoding fails
-        receiversInfo.dropOffLocation = `Location at coordinates ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
-        locationError =
-          "Could not determine address from these coordinates. Please select a different location.";
-        isLocationInServiceArea = false;
+        $form.dropOffLocation = `Location at coordinates ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+
+        // Set fallback to Saris, Addis Ababa for billing issue fallback
+        if (status === "REQUEST_DENIED") {
+          // Fallback to Addis Ababa
+          destinationCity = "Addis Ababa";
+          $form.destinationCity = "Addis Ababa";
+          isLocationInServiceArea = true;
+          locationError = null;
+
+          toast.push(
+            "Geocoding temporarily unavailable. Using Addis Ababa as the city.",
+            {
+              theme: {
+                "--toastBackground": "#FEF3C7",
+                "--toastBarBackground": "#F59E0B",
+                "--toastColor": "#92400E",
+              },
+              duration: 4000,
+            }
+          );
+
+          // If we have both origin and destination cities, determine delivery type
+          if (originCity) {
+            determineDeliveryType();
+          }
+        } else {
+          locationError =
+            "Could not determine address from these coordinates. Please select a different location.";
+          isLocationInServiceArea = false;
+        }
       }
 
       // Always update the map location
-      receiversInfo.dropOffMapLocation = `${latitude},${longitude}`;
+      // MODIFIED: Use setTimeout to delay setting dropOffMapAddress
+      setTimeout(() => {
+        if (mapInitialized) {
+          $form.dropOffMapAddress = `${latitude},${longitude}`;
+          console.log(
+            "Set dropOffMapAddress from reverseGeocode:",
+            $form.dropOffMapAddress
+          );
+        }
+      }, 100);
 
       // Check service region with the updated city information
       checkServiceRegion(latitude, longitude);
     });
   }
+
+  // Also add a missing function for searchAddress and other variables that might be referenced
+  let showSearchResults = false;
+
+  // Function to handle address search
+  async function searchAddress() {
+    if (!addressSearchQuery.trim()) {
+      return;
+    }
+
+    if (!autocompleteService) {
+      console.error("AutocompleteService not initialized");
+      toast.push("Search service not available. Please try again later.", {
+        theme: {
+          "--toastBackground": "#FEF3C7",
+          "--toastBarBackground": "#F59E0B",
+          "--toastColor": "#92400E",
+        },
+      });
+      return;
+    }
+
+    isSearchingAddress = true;
+    addressSearchResults = [];
+    showSearchResults = true;
+
+    try {
+      // Log the search request
+      console.log("Searching for address:", addressSearchQuery);
+
+      // First search for geocode (addresses)
+      searchForType("geocode");
+
+      // Then search for establishments if needed
+      setTimeout(() => {
+        if (addressSearchResults.length < 3) {
+          searchForType("establishment");
+        } else {
+          // If we already have enough results from geocode, make sure to reset the flag
+          isSearchingAddress = false;
+        }
+
+        // Add a safety timeout to ensure the flag is reset even if something goes wrong
+        setTimeout(() => {
+          isSearchingAddress = false;
+        }, 3000);
+      }, 300);
+    } catch (error) {
+      console.error("Error in place search:", error);
+      isSearchingAddress = false;
+      toast.push("Error searching for locations. Please try again.", {
+        theme: {
+          "--toastBackground": "#FEF3C7",
+          "--toastBarBackground": "#F59E0B",
+          "--toastColor": "#92400E",
+        },
+      });
+    }
+  }
+
+  // Function to handle radio button changes for delivery type
+  function handleRadioChange(value: number) {
+    radio = value;
+    $form.inCity = value.toString();
+
+    // Update delivery type based on radio selection
+    deliveryType = value === 0 ? "IN_CITY" : "BETWEEN_CITIES";
+
+    // Recalculate price if we have all needed information
+    if (distanceInKm && lat1 && lng1 && lat2 && lng2) {
+      calculateOrderPrice();
+    }
+  }
+
+  // Initialize radio button state
+  let radio: number | null =
+    $form.inCity !== null && $form.inCity !== undefined
+      ? $form.inCity === "0"
+        ? 0
+        : 1
+      : null;
+
+  // Get today's date in YYYY-MM-DD format for min date
+  const today = new Date().toISOString().split("T")[0];
 
   // Helper function to find the nearest city in our pricing config
   function findNearestConfiguredCity(latitude: number, longitude: number) {
@@ -1158,548 +688,7 @@
     return null;
   }
 
-  // Update manual coordinates when lat/lng change - always in lat,lng format
-  $: manualCoordinates = `${lat2},${lng2}`;
-
-  // Check service region whenever lat/lng changes
-  $: {
-    if (lat2 && lng2) {
-      checkServiceRegion(lat2, lng2);
-    }
-  }
-
-  // Delivery type determination
-  let deliveryType: "IN_CITY" | "BETWEEN_CITIES" | null = null;
-  let originCity = receiversInfo.originCity || "";
-  let destinationCity = receiversInfo.destinationCity || "";
-  let deliveryCity = receiversInfo.deliveryCity || "";
-  let isLocationInServiceArea = true;
-
-  // Distance and time calculation
-  let distanceInKm: number | null = null;
-  let estimatedTimeInMinutes: number | null = null;
-  let directionsService: google.maps.DirectionsService | null = null;
-
-  // Pricing variables
-  let orderType = "STANDARD";
-  let goodsType = "NORMAL";
-  let packagingType = "STANDARD_BOX";
-  let actualWeight = 0.5;
-  let length: number | null = null;
-  let width: number | null = null;
-  let height: number | null = null;
-  let calculatedPrice = 0;
-  let priceBreakdown: PriceBreakdown | null = null;
-  let canCalculatePrice = false;
-  let vehicleType: "BIKE" | "CAR" | "TRUCK" = "CAR";
-
-  // Pricing parameters for the utility function
-  let pricingParams: PricingParams | null = null;
-
-  // Computed properties
-  $: dimensionalWeight =
-    length && width && height ? (length * width * height) / 5000 : 0;
-
-  $: effectiveWeight = Math.max(actualWeight || 0, dimensionalWeight || 0);
-
-  // Check if a point is inside a polygon (for region checking)
-  function isPointInPolygon(point: number[], polygon: number[][]) {
-    const x = point[0];
-    const y = point[1];
-    let inside = false;
-
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i][0];
-      const yi = polygon[i][1];
-      const xj = polygon[j][0];
-      const yj = polygon[j][1];
-
-      const intersect =
-        yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-
-      if (intersect) inside = !inside;
-    }
-
-    return inside;
-  }
-
-  // Add a helper function to check if a point is in a polygon
-  function findRegionForPoint(lat: number, lng: number, regions: any[]) {
-    if (!regions || regions.length === 0) {
-      console.log("No regions data available");
-      return null;
-    }
-
-    for (const region of regions) {
-      if (
-        !region.coordinates ||
-        !Array.isArray(region.coordinates) ||
-        region.coordinates.length === 0
-      ) {
-        console.log(
-          `Invalid coordinates for region ${region.name || region.id}`
-        );
-        continue;
-      }
-
-      // Check if point is in polygon using ray casting algorithm
-      let inside = false;
-      const x = lng;
-      const y = lat;
-
-      for (
-        let i = 0, j = region.coordinates.length - 1;
-        i < region.coordinates.length;
-        j = i++
-      ) {
-        const xi = region.coordinates[i][1]; // lng
-        const yi = region.coordinates[i][0]; // lat
-        const xj = region.coordinates[j][1]; // lng
-        const yj = region.coordinates[j][0]; // lat
-
-        const intersect =
-          yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-
-        if (intersect) inside = !inside;
-      }
-
-      if (inside) {
-        return region;
-      }
-    }
-
-    return null;
-  }
-
-  // Original function with improvements
-  async function determineDeliveryType() {
-    if (!lat1 || !lng1 || !lat2 || !lng2) {
-      console.log("Missing coordinates");
-      return;
-    }
-
-    console.log("All coordinates available, determining delivery type");
-    console.log("originCity:", originCity, "destinationCity:", destinationCity);
-
-    try {
-      // First, we need to get the city names from the coordinates
-      if (!originCity || originCity.startsWith("Location at")) {
-        console.log("Origin city not valid, checking receiversInfo");
-
-        // Check if we have a valid city in receiversInfo (passed from sender)
-        if (
-          receiversInfo.originCity &&
-          !receiversInfo.originCity.startsWith("Location at")
-        ) {
-          console.log(
-            "Using originCity from receiversInfo:",
-            receiversInfo.originCity
-          );
-          originCity = receiversInfo.originCity;
-        } else {
-          console.log("No valid city found, using fallback");
-          // Use coordinates as city names in this fallback case
-          originCity = `Location at ${lat1.toFixed(4)}, ${lng1.toFixed(4)}`;
-          receiversInfo.originCity = originCity;
-        }
-      }
-
-      if (!destinationCity || destinationCity.startsWith("Location at")) {
-        // Default fallback - set to between cities if coordinates are far apart
-        if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-          // If distance is greater than 10km, assume between cities
-          console.log(
-            "Using distance-based fallback to determine delivery type"
-          );
-          deliveryType = "BETWEEN_CITIES";
-          handleRadioChange(1); // Set to between cities
-
-          // For destination, we'll still use coordinates if we don't have a good city
-          destinationCity = `Location at ${lat2.toFixed(4)}, ${lng2.toFixed(4)}`;
-
-          // Store in receiversInfo
-          receiversInfo.destinationCity = destinationCity;
-        } else {
-          // If distance is less than 10km, assume in-city
-          console.log(
-            "Using distance-based fallback to determine delivery type (in-city)"
-          );
-          deliveryType = "IN_CITY";
-          handleRadioChange(0); // Set to in-city
-
-          // If we have a valid origin city, use it for destination too
-          if (originCity && !originCity.startsWith("Location at")) {
-            destinationCity = originCity;
-            deliveryCity = originCity;
-          } else {
-            // Use default city
-            destinationCity = "Addis Ababa";
-            deliveryCity = "Addis Ababa";
-
-            // If we don't have a valid origin city either, set it to default too
-            if (!originCity || originCity.startsWith("Location at")) {
-              originCity = "Addis Ababa";
-            }
-          }
-
-          // Store in receiversInfo
-          receiversInfo.originCity = originCity;
-          receiversInfo.destinationCity = destinationCity;
-          receiversInfo.deliveryCity = deliveryCity;
-        }
-      }
-
-      // Check if both cities are in service regions using pricing config
-      const originInConfig = checkCityInPricingConfig(originCity);
-      const destinationInConfig = checkCityInPricingConfig(destinationCity);
-      console.log(
-        "Origin in config:",
-        originInConfig,
-        "Destination in config:",
-        destinationInConfig
-      );
-
-      if (!originInConfig || !destinationInConfig) {
-        console.log("One or both cities are outside service regions");
-        toast.push(
-          "One or both locations are outside our service regions. Please select different locations."
-        );
-        // Set inCity to between cities by default if regions can't be determined
-        // Use distance-based fallback
-        if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-          deliveryType = "BETWEEN_CITIES";
-          handleRadioChange(1); // Set to between cities
-        } else {
-          deliveryType = "IN_CITY";
-          handleRadioChange(0); // Set to in-city
-        }
-        return;
-      }
-
-      // Get the exact city names as they appear in the config
-      const exactOriginCity = getServiceCityName(originCity);
-      const exactDestinationCity = getServiceCityName(destinationCity);
-      console.log(
-        "Exact origin city:",
-        exactOriginCity,
-        "Exact destination city:",
-        exactDestinationCity
-      );
-
-      if (!exactOriginCity || !exactDestinationCity) {
-        console.log("Could not find exact city names in config");
-        // Use distance-based fallback
-        if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-          deliveryType = "BETWEEN_CITIES";
-          handleRadioChange(1); // Set to between cities
-        } else {
-          deliveryType = "IN_CITY";
-          handleRadioChange(0); // Set to in-city
-        }
-        return;
-      }
-
-      // If both locations are in the same city, it's in-city
-      if (
-        exactOriginCity.toLowerCase() === exactDestinationCity.toLowerCase()
-      ) {
-        console.log("Locations are in the same city - in-city delivery");
-        originCity = exactOriginCity;
-        destinationCity = exactDestinationCity;
-        deliveryCity = exactOriginCity;
-
-        // Store in receiversInfo
-        receiversInfo.originCity = exactOriginCity;
-        receiversInfo.destinationCity = exactDestinationCity;
-        receiversInfo.deliveryCity = exactOriginCity;
-
-        deliveryType = "IN_CITY";
-        handleRadioChange(0); // Set to in-city
-        toast.push(`In-city delivery within ${exactOriginCity} detected.`);
-      } else {
-        // Check if there's a route between these cities in the pricing matrix
-        const routeAvailable = checkPricingRoute(
-          exactOriginCity,
-          exactDestinationCity,
-          data.pricingConfig
-        );
-        console.log("Route available:", routeAvailable);
-
-        if (routeAvailable) {
-          console.log(
-            "Locations are in different cities with available route - between cities"
-          );
-          originCity = exactOriginCity;
-          destinationCity = exactDestinationCity;
-
-          // Store in receiversInfo
-          receiversInfo.originCity = exactOriginCity;
-          receiversInfo.destinationCity = exactDestinationCity;
-
-          deliveryType = "BETWEEN_CITIES";
-          handleRadioChange(1); // Set to between cities
-          toast.push(
-            `Between cities delivery from ${exactOriginCity} to ${exactDestinationCity} detected.`
-          );
-        } else {
-          console.log("No route available between these cities");
-          toast.push(
-            `We don't currently offer delivery service from ${exactOriginCity} to ${exactDestinationCity}. Please select different locations.`
-          );
-          // Set inCity to between cities by default
-          deliveryType = "BETWEEN_CITIES"; // Still set a delivery type
-          handleRadioChange(1); // Set to between cities
-        }
-      }
-
-      // Calculate distance between points using Google Maps Directions Service
-      // This will be handled by the GoogleMaps component's routeCalculated event
-    } catch (error: any) {
-      console.error("Error determining delivery type:", error);
-      toast.push(
-        "Error determining delivery type: " + (error.message || "Unknown error")
-      );
-
-      // Set a default delivery type even on error
-      // Use distance-based fallback
-      if (calculateDistance(lat1, lng1, lat2, lng2) > 10) {
-        deliveryType = "BETWEEN_CITIES";
-        handleRadioChange(1); // Set to between cities
-      } else {
-        deliveryType = "IN_CITY";
-        handleRadioChange(0); // Set to in-city
-      }
-    }
-  }
-
-  // Helper function to calculate straight-line distance between two points
-  function calculateDistance(
-    lat1: number,
-    lng1: number,
-    lat2: number,
-    lng2: number
-  ): number {
-    const R = 6371; // Radius of the Earth in km
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in km
-  }
-
-  // Handle route calculation from Google Maps component
-  function handleRouteCalculated(event: CustomEvent) {
-    const { distance, duration, route } = event.detail;
-
-    // Update the distance and time for use in the UI
-    distanceInKm = distance;
-    estimatedTimeInMinutes = duration;
-
-    console.log(`Google Maps route calculated:`);
-    console.log(`- Driving distance: ${distance.toFixed(2)} km`);
-    console.log(`- Estimated driving time: ${duration} minutes`);
-    console.log(`- Route details:`, route);
-
-    // For between cities, make sure the distance is realistic
-    if (deliveryType === "BETWEEN_CITIES") {
-      // If distance is suspiciously small for between cities (< 10km),
-      // check if we're dealing with Addis Ababa to Adama route
-      if (
-        distance < 10 &&
-        originCity &&
-        destinationCity &&
-        originCity.toLowerCase().includes("addis") &&
-        destinationCity.toLowerCase().includes("adama")
-      ) {
-        console.log(
-          "Distance appears too small for Addis Ababa to Adama route, using manual distance"
-        );
-        // Addis Ababa to Adama is approximately 90km
-        distanceInKm = 90;
-        estimatedTimeInMinutes = 120; // About 2 hours
-        console.log(
-          `Using manual distance: ${distanceInKm} km and time: ${estimatedTimeInMinutes} min`
-        );
-      }
-    }
-
-    // Now that we have accurate distance, we can calculate price
-    calculateLocalPrice();
-  }
-
-  // Calculate price based on all factors
-  function calculateLocalPrice() {
-    if (!deliveryType || !distanceInKm) {
-      calculatedPrice = 0;
-      priceBreakdown = null;
-      return;
-    }
-
-    try {
-      console.log("Calculating price with delivery type:", deliveryType);
-      console.log("Origin city:", originCity);
-      console.log("Destination city:", destinationCity);
-      console.log("Distance:", distanceInKm);
-      console.log("Time:", estimatedTimeInMinutes);
-
-      // Get pricing config with proper type checking
-      const pricingConfig = data?.pricingConfig || {};
-
-      // Get customer type with fallback
-      const customerType =
-        (data as any)?.session?.customerData?.customerType || "INDIVIDUAL";
-
-      console.log(
-        "Customer type from session:",
-        (data as any)?.session?.customerData?.customerType
-      );
-      console.log("Using customer type:", customerType);
-
-      // Check if customer has premium status
-      const isPremium = !!(data as any)?.session?.customerData?.premium;
-      console.log("Premium status:", isPremium);
-
-      // Make sure origin and destination cities are normalized
-      const normalizedOriginCity = normalizeCity(
-        originCity,
-        pricingConfig.cities
-      );
-      const normalizedDestinationCity = normalizeCity(
-        destinationCity,
-        pricingConfig.cities
-      );
-
-      // Prepare pricing parameters
-      pricingParams = {
-        deliveryType: deliveryType === "IN_CITY" ? "IN_CITY" : "BETWEEN_CITIES",
-        originCity: normalizedOriginCity,
-        destinationCity: normalizedDestinationCity,
-        distanceInKm,
-        estimatedTimeInMinutes: estimatedTimeInMinutes || 0,
-        customerType,
-        hasSubscription: !!data?.session,
-        isPremium,
-        orderType,
-        goodsType,
-        packagingType,
-        actualWeight: actualWeight || 0,
-        dimensionalWeight: dimensionalWeight || 0,
-        vehicleType,
-      };
-
-      console.log("Pricing parameters:", pricingParams);
-
-      // Calculate price using the utility function
-      const result = calculatePrice(pricingParams, pricingConfig);
-
-      console.log("Price calculation result:", result);
-
-      // Update the calculated price
-      calculatedPrice = result.totalCost;
-
-      // Store the price breakdown
-      priceBreakdown = result;
-
-      // Enable price display
-      canCalculatePrice = true;
-
-      console.log("Price calculation complete:", priceBreakdown);
-    } catch (error: any) {
-      console.error("Error calculating price:", error);
-      // Use the toast library
-      toast.push(
-        "Error calculating price: " + (error.message || "Unknown error")
-      );
-    }
-  }
-
-  // Watch for changes in location data
-  $: if (lat1 && lng1 && lat2 && lng2) {
-    determineDeliveryType();
-  }
-
-  // Recalculate price when relevant factors change
-  $: if (deliveryType && distanceInKm) {
-    calculateLocalPrice();
-  }
-
-  // Also recalculate when these factors change
-  $: if (
-    orderType ||
-    goodsType ||
-    packagingType ||
-    vehicleType ||
-    actualWeight ||
-    length ||
-    width ||
-    height
-  ) {
-    if (deliveryType && distanceInKm) {
-      calculateLocalPrice();
-    }
-  }
-
-  // Helper function to get vehicle multiplier safely
-  function getVehicleMultiplier(): number {
-    try {
-      const city = originCity || "Addis Ababa";
-      // Normalize vehicle type to match the case in the config (first letter uppercase)
-      const normalizedVehicleType =
-        vehicleType.charAt(0).toUpperCase() +
-        vehicleType.slice(1).toLowerCase();
-
-      if (
-        data?.pricingConfig?.vehicleTypes &&
-        data.pricingConfig.vehicleTypes[city] &&
-        data.pricingConfig.vehicleTypes[city][normalizedVehicleType]
-      ) {
-        return data.pricingConfig.vehicleTypes[city][normalizedVehicleType];
-      }
-    } catch (error) {
-      console.error("Error getting vehicle multiplier:", error);
-    }
-    return 1.0;
-  }
-
-  // Helper function to check if it's peak hour
-  function isPeakHour(): boolean {
-    const currentHour = new Date().getHours();
-    return currentHour >= 17 && currentHour <= 19;
-  }
-
-  // Helper function to check if there's a peak hour multiplier in the config
-  function hasPeakHourMultiplier(): boolean {
-    try {
-      const city = originCity || "Addis Ababa";
-      return !!data?.pricingConfig?.inCityPricing?.[city]?.peakHourMultiplier;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  // Helper function to get peak hour multiplier safely
-  function getPeakHourMultiplier(): number {
-    try {
-      const city = originCity || "Addis Ababa";
-      if (
-        data?.pricingConfig?.inCityPricing &&
-        data.pricingConfig.inCityPricing[city] &&
-        data.pricingConfig.inCityPricing[city].peakHourMultiplier
-      ) {
-        return data.pricingConfig.inCityPricing[city].peakHourMultiplier;
-      }
-    } catch (error) {
-      console.error("Error getting peak hour multiplier:", error);
-    }
-    return 1.2; // Default peak hour multiplier if not found in config
-  }
-
-  // Add a helper function to check if a city is in the pricing configuration
+  // Add helper functions to check city availability
   function checkCityInPricingConfig(city: string): boolean {
     if (!city) return false;
 
@@ -1757,13 +746,255 @@
     return normalizeCity(city, data.pricingConfig.cities);
   }
 
-  // Check if a route between two cities is available in the pricing matrix
-  function isRouteAvailable(
-    originCity: string,
-    destinationCity: string
-  ): boolean {
-    return checkPricingRoute(originCity, destinationCity, data.pricingConfig);
+  // Helper function to calculate straight-line distance between two points
+  function calculateDistance(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number
+  ): number {
+    const R = 6371; // Radius of the Earth in km
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distance in km
   }
+
+  // Function to determine delivery type
+  async function determineDeliveryType() {
+    if (!lat1 || !lng1 || !lat2 || !lng2) {
+      console.log("Missing coordinates");
+      return;
+    }
+
+    console.log("All coordinates available, determining delivery type");
+    console.log("originCity:", originCity, "destinationCity:", destinationCity);
+
+    try {
+      // Calculate distance between points
+      distanceInKm = calculateDistance(lat1, lng1, lat2, lng2);
+      console.log("Calculated distance:", distanceInKm);
+
+      // MODIFIED: Use setTimeout to delay setting dropOffMapAddress
+      // This prevents interference with map initialization
+      setTimeout(() => {
+        if (mapInitialized) {
+          $form.dropOffMapAddress = `${lat2},${lng2}`;
+          console.log(
+            "Set dropOffMapAddress after map initialization:",
+            $form.dropOffMapAddress
+          );
+        }
+      }, 100);
+
+      // First, we need to get the city names from the coordinates
+      if (!originCity || originCity.startsWith("Location at")) {
+        console.log("Origin city not valid, checking form");
+
+        // Check if we have a valid city in form (passed from sender)
+        if ($form.originCity && !$form.originCity.startsWith("Location at")) {
+          console.log("Using originCity from form:", $form.originCity);
+          originCity = $form.originCity;
+        } else {
+          console.log("No valid city found, using fallback");
+          // Use coordinates as city names in this fallback case
+          originCity = `Location at ${lat1.toFixed(4)}, ${lng1.toFixed(4)}`;
+          $form.originCity = originCity;
+        }
+      }
+
+      if (!destinationCity || destinationCity.startsWith("Location at")) {
+        // Default fallback - set to between cities if coordinates are far apart
+        if (distanceInKm > 10) {
+          // If distance is greater than 10km, assume between cities
+          console.log(
+            "Using distance-based fallback to determine delivery type"
+          );
+          deliveryType = "BETWEEN_CITIES";
+          handleRadioChange(1); // Set to between cities
+
+          // For destination, we'll still use coordinates if we don't have a good city
+          destinationCity = `Location at ${lat2.toFixed(4)}, ${lng2.toFixed(4)}`;
+
+          // Store in form
+          $form.destinationCity = destinationCity;
+        } else {
+          // If distance is less than 10km, assume in-city
+          console.log(
+            "Using distance-based fallback to determine delivery type (in-city)"
+          );
+          deliveryType = "IN_CITY";
+          handleRadioChange(0); // Set to in-city
+
+          // If we have a valid origin city, use it for destination too
+          if (originCity && !originCity.startsWith("Location at")) {
+            destinationCity = originCity;
+            deliveryCity = originCity;
+          } else {
+            // Use default city
+            destinationCity = "Addis Ababa";
+            deliveryCity = "Addis Ababa";
+
+            // If we don't have a valid origin city either, set it to default too
+            if (!originCity || originCity.startsWith("Location at")) {
+              originCity = "Addis Ababa";
+            }
+          }
+
+          // Store in form
+          $form.originCity = originCity;
+          $form.destinationCity = destinationCity;
+          $form.deliveryCity = deliveryCity;
+        }
+      } else {
+        // We have valid city names for both origin and destination
+
+        // Check if the origin and destination cities are the same
+        if (normalizeCity(originCity) === normalizeCity(destinationCity)) {
+          console.log("Same city delivery");
+          deliveryType = "IN_CITY";
+          handleRadioChange(0); // Set to in-city
+          deliveryCity = originCity; // Use origin city as the delivery city
+          $form.deliveryCity = deliveryCity;
+        } else {
+          // Different cities - check if we have a route between them
+          console.log("Different cities, checking route");
+          const routeAvailable = checkPricingRoute(
+            originCity,
+            destinationCity,
+            data.pricingConfig
+          );
+
+          if (routeAvailable) {
+            console.log("Route available");
+            deliveryType = "BETWEEN_CITIES";
+            handleRadioChange(1); // Set to between cities
+          } else {
+            console.log("Route not available in pricing matrix");
+            // If no direct route, check distance and make a best guess
+            if (distanceInKm > 10) {
+              console.log("Using distance to determine between cities");
+              deliveryType = "BETWEEN_CITIES";
+              handleRadioChange(1); // Set to between cities
+            } else {
+              console.log("Short distance, assuming in-city");
+              deliveryType = "IN_CITY";
+              handleRadioChange(0); // Set to in-city
+              deliveryCity = originCity; // Use origin city as delivery city
+              $form.deliveryCity = deliveryCity;
+            }
+          }
+        }
+      }
+
+      // Store the delivery type in the form using inCity field
+      $form.inCity = deliveryType === "IN_CITY" ? "0" : "1";
+
+      // Calculate price with the determined delivery type
+      calculateOrderPrice();
+
+      // After determining delivery type, validate the next button state
+      if (validationErrors) {
+        validationErrors.inCity = !deliveryType;
+      }
+    } catch (error: any) {
+      console.error("Error determining delivery type:", error);
+      toast.push(
+        "Error determining delivery type: " + (error.message || "Unknown error")
+      );
+
+      // Set a default delivery type even on error
+      // Use distance-based fallback
+      if (distanceInKm && distanceInKm > 10) {
+        deliveryType = "BETWEEN_CITIES";
+        handleRadioChange(1); // Set to between cities
+      } else {
+        deliveryType = "IN_CITY";
+        handleRadioChange(0); // Set to in-city
+      }
+
+      // Store the delivery type in the form using inCity field
+      $form.inCity = deliveryType === "IN_CITY" ? "0" : "1";
+    }
+  }
+
+  // Function to calculate the order price
+  function calculateOrderPrice() {
+    if (!distanceInKm || !deliveryType) {
+      console.log("Missing required data for price calculation");
+      calculatedPrice = 0;
+      canCalculatePrice = false;
+      return;
+    }
+
+    try {
+      // Prepare pricing parameters
+      const pricingParams: PricingParams = {
+        // Location info
+        deliveryType: deliveryType,
+        originCity: originCity,
+        destinationCity: destinationCity,
+        distanceInKm: distanceInKm,
+        // Fix the estimatedTimeInMinutes type issue
+        estimatedTimeInMinutes: estimatedTimeInMinutes
+          ? estimatedTimeInMinutes
+          : undefined,
+
+        // Customer info
+        customerType: customerType,
+        hasSubscription: hasSubscription,
+
+        // Order details
+        orderType: orderType,
+        goodsType: goodsType,
+        packagingType: packagingType,
+
+        // Package details
+        actualWeight: actualWeight,
+        dimensionalWeight: dimensionalWeight,
+
+        // Vehicle type
+        vehicleType: vehicleType,
+      };
+
+      // Calculate the price
+      const priceResult = calculatePrice(pricingParams, data.pricingConfig);
+      calculatedPrice = priceResult?.totalCost || 0;
+      canCalculatePrice = true;
+
+      // Store the calculated price in form fields
+      $form.priceBreakdown = priceResult;
+      $form.totalCost = calculatedPrice;
+
+      if (estimatedTimeInMinutes) {
+        $form.estimatedTimeInMinutes = estimatedTimeInMinutes;
+      }
+
+      console.log("Calculated price:", calculatedPrice, priceResult);
+    } catch (error) {
+      console.error("Error calculating price:", error);
+      toast.push("Error calculating price. Please try again.");
+      calculatedPrice = 0;
+      canCalculatePrice = false;
+    }
+  }
+
+  // Delivery type and related variables
+  let deliveryType: "IN_CITY" | "BETWEEN_CITIES" | null = null;
+  let originCity = $form.originCity || "";
+  let destinationCity = $form.destinationCity || "";
+  let deliveryCity = $form.deliveryCity || "";
+  let isLocationInServiceArea = true;
+  let actualWeight: number = 1; // Default to 1 kg
+  let dimensionalWeight: number = 1; // Default dimensional weight
+  let customerType: string = "STANDARD"; // Default customer type
+  let hasSubscription: boolean = false; // Default subscription status
 
   // Function to check if coordinates are within service regions
   function checkServiceRegion(latitude: number, longitude: number) {
@@ -1780,15 +1011,376 @@
     return false;
   }
 
-  // Accept originCity prop from parent component
+  // Add missing functions and variables used in the template
+  let distanceInKm: number | null = null;
+  let estimatedTimeInMinutes: number | null = null;
+  let calculatedPrice: number = 0;
+  let canCalculatePrice = false;
+  let orderType: string = "STANDARD";
+  let vehicleType: string = "Standard";
+  let goodsType: string = "General";
+  let packagingType: string = "BOX";
 
-  // Add this function to check if a string contains GPS coordinates format
-  function isCoordinatesString(str: string): boolean {
-    return (
-      str.startsWith("Location at") ||
-      /Location at \d+\.\d+, \d+\.\d+/.test(str)
-    );
+  // Function to handle marker click events
+  function handleMarkerClick(event: CustomEvent) {
+    // Process marker click
+    console.log("Marker clicked:", event.detail);
   }
+
+  // Function to handle route calculation events
+  function handleRouteCalculated(event: CustomEvent) {
+    const detail = event.detail;
+    console.log("Route calculated:", detail);
+
+    // Update distance and time estimates
+    distanceInKm = detail.distance;
+    estimatedTimeInMinutes = detail.duration;
+
+    // Store the distance and time in the form
+    $form.distanceInKm = distanceInKm || 0;
+    $form.estimatedTimeInMinutes = estimatedTimeInMinutes || 0;
+
+    // Determine delivery type if needed
+    if (
+      distanceInKm &&
+      radio !== null &&
+      !deliveryType &&
+      lat1 &&
+      lng1 &&
+      lat2 &&
+      lng2
+    ) {
+      determineDeliveryType();
+    }
+    // If we already have a delivery type, simply calculate price
+    else if (distanceInKm && deliveryType) {
+      calculateOrderPrice();
+    }
+  }
+
+  // Function to handle map ready events
+  let mapInitialized = false;
+
+  function handleMapReady(event: CustomEvent) {
+    console.log("Map is ready:", event.detail);
+
+    // Set map initialized flag
+    mapInitialized = true;
+
+    // Get the Google Maps services
+    const google = event.detail.google;
+    if (google && google.maps) {
+      // Initialize services
+      const dummyElement = document.createElement("div");
+      placesService = new google.maps.places.PlacesService(dummyElement);
+      autocompleteService = new google.maps.places.AutocompleteService();
+      geocoder = new google.maps.Geocoder();
+
+      console.log("Google Maps services initialized:", {
+        placesService: !!placesService,
+        autocompleteService: !!autocompleteService,
+        geocoder: !!geocoder,
+      });
+    } else {
+      console.error(
+        "Google Maps API not available in mapReady event:",
+        event.detail
+      );
+    }
+  }
+
+  // Function to update coordinates from the input field
+  async function updateCoordinatesFromInput() {
+    try {
+      // Parse coordinates from input
+      const [latStr, lngStr] = manualCoordinates.split(",");
+      const newLat = parseFloat(latStr.trim());
+      const newLng = parseFloat(lngStr.trim());
+
+      // Validate coordinates
+      if (!isNaN(newLat) && !isNaN(newLng)) {
+        lat2 = newLat;
+        lng2 = newLng;
+        $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+        manualCoordinates = `${lat2},${lng2}`; // Keep manualCoordinates in sync here
+
+        // Force route recalculation
+        if (googleMapsComponent) await googleMapsComponent.forceRouteUpdate();
+
+        // Reverse geocode to get address and check if in service area
+        reverseGeocode(newLat, newLng);
+        checkServiceRegion(newLat, newLng);
+
+        // Also update delivery type if pickup location is set
+        if (lat1 && lng1) {
+          determineDeliveryType();
+        }
+      } else {
+        toast.push(
+          "Invalid coordinates format. Please use format: latitude, longitude",
+          {
+            theme: {
+              "--toastBackground": "#FEF3C7",
+              "--toastBarBackground": "#F59E0B",
+              "--toastColor": "#92400E",
+            },
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Error parsing coordinates:", error);
+      toast.push(
+        "Invalid coordinates format. Please use format: latitude, longitude",
+        {
+          theme: {
+            "--toastBackground": "#FEF3C7",
+            "--toastBarBackground": "#F59E0B",
+            "--toastColor": "#92400E",
+          },
+        }
+      );
+    }
+  }
+
+  // Function to get the user's current location
+  function getUserLocation() {
+    if (navigator.geolocation) {
+      isLoadingLocation = true;
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          lat2 = position.coords.latitude;
+          lng2 = position.coords.longitude;
+          $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+          manualCoordinates = `${lat2},${lng2}`; // Keep manualCoordinates in sync here
+
+          // Force route recalculation
+          if (googleMapsComponent) await googleMapsComponent.forceRouteUpdate();
+
+          // Reverse geocode to get address
+          reverseGeocode(lat2, lng2);
+
+          isLoadingLocation = false;
+
+          // Show success message
+          toast.push("Location updated successfully", {
+            theme: {
+              "--toastBackground": "#D1FAE5",
+              "--toastBarBackground": "#10B981",
+              "--toastColor": "#065F46",
+            },
+          });
+        },
+        (error) => {
+          console.error("Geolocation error:", error);
+          isLoadingLocation = false;
+
+          // Show specific error based on error code
+          if (error.code === 1) {
+            // Permission denied
+            locationError =
+              "Location permission denied. Please check your browser settings and allow location access.";
+          } else if (error.code === 2) {
+            // Position unavailable
+            locationError =
+              "Unable to determine your location. Please try again or enter coordinates manually.";
+          } else if (error.code === 3) {
+            // Timeout
+            locationError =
+              "Location request timed out. Please try again or enter coordinates manually.";
+          } else {
+            locationError =
+              "Error getting your location. Please try again or enter coordinates manually.";
+          }
+
+          toast.push(locationError, {
+            theme: {
+              "--toastBackground": "#FEF3C7",
+              "--toastBarBackground": "#F59E0B",
+              "--toastColor": "#92400E",
+            },
+          });
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        }
+      );
+    } else {
+      locationError =
+        "Geolocation is not supported by your browser. Please enter coordinates manually.";
+      toast.push(locationError, {
+        theme: {
+          "--toastBackground": "#FEF3C7",
+          "--toastBarBackground": "#F59E0B",
+          "--toastColor": "#92400E",
+        },
+      });
+    }
+  }
+
+  // Function to check if current time is peak hour
+  function isPeakHour(): boolean {
+    const now = new Date();
+    const hour = now.getHours();
+
+    // Define peak hours (e.g., 7-10 AM and 4-7 PM)
+    return (hour >= 7 && hour <= 10) || (hour >= 16 && hour <= 19);
+  }
+
+  // Function to handle the next button click
+  function handleNext() {
+    // Validate all required fields
+    let hasErrors = false;
+
+    if (!$form.receiverUsername) {
+      validationErrors.userName = true;
+      hasErrors = true;
+    } else {
+      validationErrors.userName = false;
+    }
+
+    if (!$form.receiverPhoneNumber) {
+      validationErrors.phoneNumber = true;
+      hasErrors = true;
+    } else {
+      validationErrors.phoneNumber = false;
+    }
+
+    if (!$form.receiverEmail) {
+      validationErrors.email = true;
+      hasErrors = true;
+    } else {
+      validationErrors.email = false;
+    }
+
+    if ($form.inCity === null || $form.inCity === undefined) {
+      validationErrors.inCity = true;
+      hasErrors = true;
+    } else {
+      validationErrors.inCity = false;
+    }
+
+    if (!$dropOffDateProxy) {
+      validationErrors.dropOffTime = true;
+      hasErrors = true;
+    } else {
+      validationErrors.dropOffTime = false;
+    }
+
+    if (!$form.dropOffLocation) {
+      validationErrors.dropOffLocation = true;
+      hasErrors = true;
+    } else {
+      validationErrors.dropOffLocation = false;
+    }
+
+    if (hasErrors) {
+      toast.push("Please fill in all required fields", {
+        theme: {
+          "--toastBackground": "#FEF3C7",
+          "--toastBarBackground": "#F59E0B",
+          "--toastColor": "#92400E",
+        },
+      });
+      return;
+    }
+
+    // If not in service area, but we have coordinates and billing issue (REQUEST_DENIED)
+    // Allow to proceed with Addis Ababa as default city
+    if (!isLocationInServiceArea && lat2 && lng2) {
+      // Check if we're using the fallback city
+      if (
+        destinationCity === "Addis Ababa" &&
+        $form.destinationCity === "Addis Ababa"
+      ) {
+        isLocationInServiceArea = true;
+      } else {
+        toast.push("Please select a location within our service area", {
+          theme: {
+            "--toastBackground": "#FEF3C7",
+            "--toastBarBackground": "#F59E0B",
+            "--toastColor": "#92400E",
+          },
+        });
+        return;
+      }
+    }
+
+    // Ensure delivery type is set
+    if (!deliveryType) {
+      // Try to determine delivery type one more time before proceeding
+      if (lat1 && lng1 && lat2 && lng2) {
+        determineDeliveryType();
+        // If we still don't have a delivery type, use distance-based fallback
+        if (!deliveryType) {
+          const distance = calculateDistance(lat1, lng1, lat2, lng2);
+          deliveryType = distance > 10 ? "BETWEEN_CITIES" : "IN_CITY";
+          $form.inCity = deliveryType === "IN_CITY" ? "0" : "1";
+        }
+      } else {
+        toast.push("Please set both pickup and delivery locations", {
+          theme: {
+            "--toastBackground": "#FEF3C7",
+            "--toastBarBackground": "#F59E0B",
+            "--toastColor": "#92400E",
+          },
+        });
+        return;
+      }
+    }
+
+    // Update distance if not already set
+    if (!$form.distanceInKm && lat1 && lng1 && lat2 && lng2) {
+      $form.distanceInKm = calculateDistance(lat1, lng1, lat2, lng2);
+    }
+
+    // Make one final attempt to calculate price if not already done
+    if (!$form.totalCost && deliveryType) {
+      calculateOrderPrice();
+    }
+
+    // Pass all relevant data to parent component
+    const receiverInfo = {
+      distanceInKm: distanceInKm,
+      estimatedTimeInMinutes: estimatedTimeInMinutes,
+      originCity: originCity,
+      destinationCity: destinationCity,
+      deliveryCity: deliveryCity,
+      deliveryType: deliveryType,
+      totalCost: calculatedPrice,
+      priceBreakdown: $form.priceBreakdown,
+      coordinates: { lat: lat2, lng: lng2 },
+    };
+
+    // If all validation passes, proceed to next step
+    dispatch("next", receiverInfo);
+  }
+
+  // Add this function after the existing functions
+  function updateMapMarker() {
+    // Force the map marker to update by changing the markerKey
+    // This will trigger the reactive statement in the GoogleMaps component
+    setTimeout(() => {
+      // Create a timestamp-based key to ensure uniqueness
+      const timestamp = new Date().getTime();
+      const mapElement = document.getElementById("receiver-map");
+      if (mapElement) {
+        // Dispatch a custom event to force map update
+        const updateEvent = new CustomEvent("forceMapUpdate", {
+          detail: { lat: lat2, lng: lng2, timestamp },
+        });
+        mapElement.dispatchEvent(updateEvent);
+
+        // Log the update
+        console.log("Forced map marker update:", { lat: lat2, lng: lng2 });
+      }
+    }, 100);
+  }
+
+  // At the top, add a reactive marker key
+  $: markerKey = `${lat2},${lng2},${Date.now()}`;
 </script>
 
 <div class="{className} space-y-6" in:fade={{ duration: 300 }}>
@@ -1801,21 +1393,7 @@
 
   {#if !disableInput}
     <div class="mb-6">
-      <form
-        method="post"
-        action="?/searchCustomer"
-        use:enhance={({ formElement }) => {
-          searchQuery = formElement.searchCustomer.value;
-          isSearching = true;
-          return async ({ update }) => {
-            await update();
-            formElement.searchCustomer.value = searchQuery;
-            searchResultVisible = true;
-            isSearching = false;
-          };
-        }}
-        on:submit|stopPropagation={() => {}}
-      >
+      <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">
           Search for existing customer (optional)
         </label>
@@ -1831,64 +1409,55 @@
                 class="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
                 placeholder="Search by name, email or phone"
                 name="searchCustomer"
+                bind:value={searchQuery}
+                on:input={handleSearchInputChange}
                 type="search"
               />
-            </div>
-            <button
-              type="submit"
-              class="ml-2 bg-secondary text-white px-4 py-2 rounded-lg hover:bg-secondary/90 transition-colors flex items-center"
-            >
               {#if isSearching}
-                <svg
-                  class="animate-spin h-5 w-5 mr-2"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
+                <div
+                  class="absolute right-3 top-1/2 transform -translate-y-1/2"
                 >
-                  <circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  ></circle>
-                  <path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
+                  <svg
+                    class="animate-spin h-5 w-5 text-gray-400"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                </div>
               {/if}
-              Search
-            </button>
+            </div>
           </div>
         </div>
-      </form>
+      </div>
     </div>
   {/if}
 
-  {#if form?.customerFound && searchResultVisible}
-    <div class="mb-6" in:fly={{ y: 20, duration: 300, easing: cubicOut }}>
+  {#if customerSearchResults.length > 0 && searchResultVisible}
+    <div
+      class="mb-6 search-results"
+      in:fly={{ y: 20, duration: 300, easing: cubicOut }}
+    >
       <h3 class="text-sm font-medium text-gray-700 mb-2">Search Results</h3>
       <div class="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
-        {#each form?.customerFound as customer}
+        {#each customerSearchResults as customer}
           <button
             class="w-full text-left hover:bg-gray-100 transition-colors p-4 border-b border-gray-200 last:border-b-0"
             type="button"
-            on:click|preventDefault={() => {
-              receiversInfo = {
-                id: customer.id,
-                userName: customer.User.userName ?? null,
-                phoneNumber: customer.User.phoneNumber ?? null,
-                dropOffLocation: customer.physicalAddress ?? null,
-                dropOffMapLocation: customer.mapAddress ?? null,
-                dropOffTime: null,
-                inCity: receiversInfo.inCity || "",
-                receiverEmail: customer.User.email ?? null,
-              };
-              searchResultVisible = false;
-            }}
+            on:click|preventDefault={() => handleCustomerSelect(customer)}
           >
             <div class="flex items-start">
               <div class="bg-secondary/20 p-2 rounded-full mr-3">
@@ -1932,15 +1501,16 @@
       <input
         id="receiverUsername"
         disabled={disableInput}
-        bind:value={receiversInfo.userName}
-        class="w-full p-3 border {errors.userName
+        bind:value={$form.receiverUsername}
+        class="w-full p-3 border {$errors.receiverUsername ||
+        validationErrors.userName
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
         type="text"
         name="receiverUsername"
         placeholder="Full name"
       />
-      {#if errors.userName}
+      {#if $errors.receiverUsername || validationErrors.userName}
         <p class="mt-1 text-sm text-red-500">
           Please enter the receiver's name
         </p>
@@ -1957,15 +1527,16 @@
       <input
         id="receiverPhoneNumber"
         disabled={disableInput}
-        bind:value={receiversInfo.phoneNumber}
-        class="w-full p-3 border {errors.phoneNumber
+        bind:value={$form.receiverPhoneNumber}
+        class="w-full p-3 border {$errors.receiverPhoneNumber ||
+        validationErrors.phoneNumber
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
         type="text"
         name="receiverPhoneNumber"
         placeholder="Phone number"
       />
-      {#if errors.phoneNumber}
+      {#if $errors.receiverPhoneNumber || validationErrors.phoneNumber}
         <p class="mt-1 text-sm text-red-500">
           Please enter a valid phone number
         </p>
@@ -1982,15 +1553,16 @@
       <input
         id="receiverEmail"
         disabled={disableInput}
-        bind:value={receiversInfo.receiverEmail}
-        class="w-full p-3 border {errors.email
+        bind:value={$form.receiverEmail}
+        class="w-full p-3 border {$errors.receiverEmail ||
+        validationErrors.email
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
         type="email"
         name="receiverEmail"
         placeholder="Email address"
       />
-      {#if errors.email}
+      {#if $errors.receiverEmail || validationErrors.email}
         <p class="mt-1 text-sm text-red-500">
           Please enter a valid email address
         </p>
@@ -2009,19 +1581,20 @@
       <input
         id="dropOffTime"
         disabled={disableInput}
-        bind:value={receiversInfo.dropOffTime}
+        bind:value={$dropOffDateProxy}
         bind:this={dateInput}
         on:click={() => {
           dateInput && dateInput.showPicker();
         }}
-        class="w-full p-3 border {errors.dropOffTime
+        class="w-full p-3 border {$errors.dropOffTime ||
+        validationErrors.dropOffTime
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
         type="date"
         min={today}
         name="dropOffTime"
       />
-      {#if errors.dropOffTime}
+      {#if $errors.dropOffTime || validationErrors.dropOffTime}
         <p class="mt-1 text-sm text-red-500">Please select a delivery date</p>
       {/if}
     </div>
@@ -2036,15 +1609,16 @@
       <input
         id="dropOffLocation"
         disabled={disableInput}
-        bind:value={receiversInfo.dropOffLocation}
-        class="w-full p-3 border {errors.dropOffLocation
+        bind:value={$form.dropOffLocation}
+        class="w-full p-3 border {$errors.dropOffLocation ||
+        validationErrors.dropOffLocation
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
         type="text"
         name="dropOffLocation"
         placeholder="Enter full address"
       />
-      {#if errors.dropOffLocation}
+      {#if $errors.dropOffLocation || validationErrors.dropOffLocation}
         <p class="mt-1 text-sm text-red-500">
           Please enter a valid delivery address
         </p>
@@ -2396,119 +1970,125 @@
         {/if}
 
         <div class="relative">
-          <div class="h-56 rounded-lg overflow-hidden border border-gray-300">
-            {#key [lat2, lng2, lat1, lng1]}
-              <GoogleMaps
-                bind:lat={lat2}
-                bind:lng={lng2}
-                destinationLat={lat1 || 0}
-                destinationLng={lng1 || 0}
-                display={false}
-                showSearchBox={false}
-                showRoute={lat1 !== null && lng1 !== null}
-                on:locationChanged={({ detail }) => {
-                  if (!disableInput) {
-                    lat2 = detail.lat;
-                    lng2 = detail.lng;
-
-                    // Reverse geocode to get address and check service region
-                    reverseGeocode(lat2, lng2);
-
-                    // Check if location is within service region
-                    checkServiceRegion(lat2, lng2);
-
-                    // Trigger delivery type determination when delivery location changes
-                    if (lat1 && lng1) {
-                      determineDeliveryType();
-                    }
-                  }
-                }}
-                on:routeCalculated={handleRouteCalculated}
-                on:mapReady={handleMapReady}
-                on:error={({ detail }) => {
-                  console.error("Google Maps error:", detail);
-                  locationError =
-                    "There was an issue loading the map: " + detail.message;
-                }}
-              />
-            {/key}
-          </div>
-
-          <!-- Map Instructions Overlay -->
           <div
-            class="absolute top-2 right-2 bg-white/90 rounded-lg shadow-md p-3 max-w-[250px] border-l-4 border-secondary"
+            class="h-56 rounded-lg overflow-hidden border border-gray-300 shadow-inner"
           >
-            <p class="text-xs text-gray-700 mb-1">
-              <span class="font-medium text-secondary">Delivery Route:</span>
-              {#if lat1 && lng1}
-                <span class="block mt-1">
-                  <img
-                    src={pickUp}
-                    alt="Pickup location"
-                    class="inline-block w-4 h-4 mr-1 align-middle"
-                  />
-                  Pickup location
-                </span>
-                <span class="block mt-1">
-                  <img
-                    src={dropOffIcon}
-                    alt="Delivery location"
-                    class="inline-block w-4 h-4 mr-1 align-middle"
-                  />
-                  Delivery location
-                </span>
-                <span class="block mt-1">
-                  <span
-                    class="inline-block w-12 h-1.5 bg-primary rounded-full mr-1"
-                  ></span>
-                  Driving route
-                </span>
-              {:else}
-                <span class="block mt-1"
-                  >Set your delivery location by dragging the pin or clicking on
-                  the map.</span
-                >
-              {/if}
-            </p>
+            <GoogleMaps
+              bind:this={googleMapsComponent}
+              bind:lat={lat2}
+              bind:lng={lng2}
+              mapId="receiver-map"
+              destinationLat={lat1 || 0}
+              destinationLng={lng1 || 0}
+              display={false}
+              showSearchBox={false}
+              showRoute={lat1 !== null && lng1 !== null}
+              on:locationChanged={({ detail }) => {
+                if (!disableInput) {
+                  lat2 = detail.lat;
+                  lng2 = detail.lng;
+                  $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
 
-            {#if distanceInKm && estimatedTimeInMinutes}
-              <div class="mt-2 pt-2 border-t border-gray-200">
-                <div class="flex items-center text-xs text-gray-700">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-3 w-3 mr-1 text-secondary"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
-                    />
-                  </svg>
-                  <span class="font-medium">{distanceInKm.toFixed(1)} km</span>
-                </div>
-                <div class="flex items-center text-xs text-gray-700 mt-1">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-3 w-3 mr-1 text-secondary"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span class="font-medium">{estimatedTimeInMinutes} min</span>
-                </div>
-              </div>
-            {/if}
+                  // Reverse geocode to get address and check service region
+                  reverseGeocode(lat2, lng2);
+
+                  // Check if location is within service region
+                  checkServiceRegion(lat2, lng2);
+
+                  // Trigger delivery type determination when delivery location changes
+                  if (lat1 && lng1) {
+                    determineDeliveryType();
+                  }
+                }
+              }}
+              on:mapClick={(event) => {
+                // When user clicks on map to place marker, check service region
+                const detail = event.detail;
+                lat2 = detail.lat;
+                lng2 = detail.lng;
+                $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+
+                checkServiceRegion(lat2, lng2);
+                reverseGeocode(lat2, lng2);
+
+                // Trigger delivery type determination when delivery location changes
+                if (lat1 && lng1) {
+                  determineDeliveryType();
+                }
+
+                // Create visual ripple effect
+                if (event && event.detail && event.detail.nativeEvent) {
+                  const nativeEvent = event.detail.nativeEvent;
+                  const mapElement = document.querySelector("#receiver-map"); // <-- Use correct ID
+                  if (mapElement) {
+                    // Create ripple element
+                    const ripple = document.createElement("div");
+                    ripple.style.position = "absolute";
+                    ripple.style.width = "50px";
+                    ripple.style.height = "50px";
+                    ripple.style.borderRadius = "50%";
+                    ripple.style.backgroundColor = "rgba(255, 0, 0, 0.5)";
+                    ripple.style.transform = "translate(-50%, -50%)";
+                    ripple.style.pointerEvents = "none";
+                    ripple.style.zIndex = "999";
+                    ripple.style.animation = "ripple 1s ease-out";
+
+                    // Add keyframes animation to head if not already present
+                    if (!document.querySelector("#ripple-keyframes")) {
+                      const style = document.createElement("style");
+                      style.id = "ripple-keyframes";
+                      style.textContent = `
+                          @keyframes ripple {
+                            0% {
+                              transform: translate(-50%, -50%) scale(0);
+                              opacity: 1;
+                            }
+                            100% {
+                              transform: translate(-50%, -50%) scale(2);
+                              opacity: 0;
+                            }
+                          }
+                        `;
+                      document.head.appendChild(style);
+                    }
+
+                    // Position ripple at click location
+                    const rect = mapElement.getBoundingClientRect();
+                    const x = nativeEvent.clientX - rect.left;
+                    const y = nativeEvent.clientY - rect.top;
+
+                    ripple.style.left = x + "px";
+                    ripple.style.top = y + "px";
+
+                    // Add to map and remove after animation
+                    mapElement.appendChild(ripple);
+                    setTimeout(() => {
+                      if (ripple.parentNode) {
+                        ripple.parentNode.removeChild(ripple);
+                      }
+                    }, 1000);
+                  }
+                }
+
+                // Show a toast notification to confirm the tap
+                toast.push({
+                  msg: "Delivery location updated",
+                  theme: {
+                    "--toastBackground": "#4F46E5",
+                    "--toastColor": "white",
+                  },
+                  duration: 2000,
+                });
+              }}
+              on:markerClick={handleMarkerClick}
+              on:routeCalculated={handleRouteCalculated}
+              on:mapReady={handleMapReady}
+              on:error={({ detail }) => {
+                console.error("Google Maps error:", detail);
+                locationError =
+                  "There was an issue loading the map: " + detail.message;
+              }}
+            />
           </div>
         </div>
       </div>
@@ -2525,7 +2105,7 @@
           <div class="flex items-center">
             <input
               id="coordinates"
-              bind:value={manualCoordinates}
+              bind:value={$form.dropOffMapAddress}
               disabled={disableInput}
               class="w-full p-2 border border-gray-300 rounded-lg text-gray-700 text-sm focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
               type="text"
@@ -2566,10 +2146,13 @@
               type="button"
               disabled={disableInput}
               class="text-xs bg-gray-200 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-300 transition-colors"
-              on:click={() => {
+              on:click={async () => {
                 lat2 = 9.01;
                 lng2 = 38.74;
-                manualCoordinates = `${lat2},${lng2}`;
+                $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+                // Force route recalculation
+                if (googleMapsComponent)
+                  await googleMapsComponent.forceRouteUpdate();
                 reverseGeocode(lat2, lng2);
               }}
             >
@@ -2579,10 +2162,31 @@
               type="button"
               disabled={disableInput}
               class="text-xs bg-gray-200 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-300 transition-colors"
-              on:click={() => {
+              on:click={async () => {
+                lat2 = 8.9864;
+                lng2 = 38.7955;
+                manualCoordinates = `${lat2},${lng2}`;
+                $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+                // Force route recalculation
+                if (googleMapsComponent)
+                  await googleMapsComponent.forceRouteUpdate();
+                reverseGeocode(lat2, lng2);
+              }}
+            >
+              Saris
+            </button>
+            <button
+              type="button"
+              disabled={disableInput}
+              class="text-xs bg-gray-200 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-300 transition-colors"
+              on:click={async () => {
                 lat2 = 8.9806;
                 lng2 = 38.7578;
                 manualCoordinates = `${lat2},${lng2}`;
+                $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+                // Force route recalculation
+                if (googleMapsComponent)
+                  await googleMapsComponent.forceRouteUpdate();
                 reverseGeocode(lat2, lng2);
               }}
             >
@@ -2592,10 +2196,14 @@
               type="button"
               disabled={disableInput}
               class="text-xs bg-gray-200 text-gray-700 px-3 py-2 rounded-lg hover:bg-gray-300 transition-colors"
-              on:click={() => {
+              on:click={async () => {
                 lat2 = 9.0092;
                 lng2 = 38.7645;
                 manualCoordinates = `${lat2},${lng2}`;
+                $form.dropOffMapAddress = `${lat2},${lng2}`; // Update form
+                // Force route recalculation
+                if (googleMapsComponent)
+                  await googleMapsComponent.forceRouteUpdate();
                 reverseGeocode(lat2, lng2);
               }}
             >
@@ -2613,13 +2221,9 @@
       >
         <div class="flex items-center justify-between mb-3">
           <h4 class="font-medium text-gray-800">Delivery Route</h4>
-          {#if distanceInKm && calculatedPrice > 0}
-            <div class="bg-secondary/10 px-3 py-1 rounded-full">
-              <span class="text-secondary font-semibold"
-                >${calculatedPrice.toFixed(2)}</span
-              >
-            </div>
-          {/if}
+          <div class="bg-secondary/10 px-3 py-1 rounded-full">
+            <span class="text-secondary font-semibold">Ready</span>
+          </div>
         </div>
 
         <!-- Route visualization with improved styling -->
@@ -2731,14 +2335,6 @@
                       {distanceInKm.toFixed(1)} km
                     </p>
                   </div>
-                  {#if calculatedPrice > 0}
-                    <div class="text-right">
-                      <p class="text-xs text-gray-600">Price</p>
-                      <p class="text-sm font-bold text-secondary">
-                        ${calculatedPrice.toFixed(2)}
-                      </p>
-                    </div>
-                  {/if}
                 </div>
               </div>
             </div>
@@ -2894,87 +2490,44 @@
                 </div>
               </div>
 
-              {#if calculatedPrice > 0}
+              <!-- Continue button hint -->
+              <div
+                class="mt-3 pt-3 border-t border-gray-200 flex justify-center"
+              >
                 <div
-                  class="mt-3 pt-3 border-t border-gray-200 flex justify-between items-center"
+                  class="bg-blue-50 px-4 py-2 rounded-full border border-blue-100"
                 >
-                  <div class="flex items-center space-x-1">
-                    <span
-                      class="inline-block px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-700 font-medium"
-                      >{vehicleType}</span
-                    >
-                    <span
-                      class="inline-block px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-700 font-medium"
-                      >{goodsType}</span
-                    >
-                    <span
-                      class="inline-block px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-700 font-medium"
-                      >{packagingType.replace("_", " ")}</span
-                    >
-                    {#if isPeakHour()}
-                      <span
-                        class="inline-block px-2 py-1 bg-yellow-100 rounded-full text-xs text-yellow-800 font-medium animate-pulse"
-                        >PEAK HOURS</span
-                      >
-                    {/if}
-                  </div>
-                  <div class="flex items-center">
-                    <div class="relative">
-                      <span
-                        class="inline-block h-2 w-2 bg-green-500 rounded-full mr-1.5 animate-ping absolute"
-                      ></span>
-                      <span
-                        class="inline-block h-2 w-2 bg-green-500 rounded-full mr-1.5 relative"
-                      ></span>
-                    </div>
-                    <span class="text-sm font-medium text-green-700"
-                      >Ready for checkout</span
-                    >
-                  </div>
-                </div>
-              {/if}
-
-              <!-- Limited time offer -->
-              {#if isPeakHour() && deliveryType === "BETWEEN_CITIES"}
-                <div class="mt-3 flex items-center justify-center">
-                  <div
-                    class="px-3 py-1 bg-yellow-50 border border-yellow-200 rounded-full"
+                  <p
+                    class="text-xs text-blue-800 font-medium flex items-center"
                   >
-                    <p class="text-xs text-yellow-800 font-medium">
-                      🔥 High demand for {destinationCity} routes – Limited spots
-                      available
-                    </p>
-                  </div>
+                    <svg
+                      class="h-4 w-4 mr-1.5 text-blue-600"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M13 9l3 3m0 0l-3 3m3-3H8m13 0a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    Continue to customize your package and see pricing
+                  </p>
                 </div>
-              {:else if deliveryType === "IN_CITY" && !isPeakHour()}
-                <div class="mt-3 flex items-center justify-center">
-                  <div
-                    class="px-3 py-1 bg-blue-50 border border-blue-200 rounded-full"
-                  >
-                    <p class="text-xs text-blue-800 font-medium">
-                      ⚡ Off-peak special: Faster delivery times currently
-                      available!
-                    </p>
-                  </div>
-                </div>
-              {/if}
+              </div>
             </div>
           </div>
         {/if}
       </div>
     {/if}
 
+    <!-- Remove the pricing section and replace with a simple message -->
     <div class="mb-6">
       <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
         <h3 class="text-lg font-semibold text-gray-800 mb-3 flex items-center">
-          Delivery Details & Pricing
-          {#if calculatedPrice > 0}
-            <span
-              class="ml-2 text-sm bg-secondary/10 text-secondary px-2 py-0.5 rounded-full font-normal"
-            >
-              ${calculatedPrice.toFixed(2)}
-            </span>
-          {/if}
+          Delivery Details
         </h3>
 
         <!-- Delivery Type Information -->
@@ -3022,45 +2575,149 @@
           </div>
         </div>
 
-        <!-- Real-time Price Estimation -->
-        {#if canCalculatePrice && deliveryType}
-          <span></span>
-        {:else if lat1 && lng1 && lat2 && lng2}
-          <div
-            class="mb-4 p-4 bg-white rounded-lg border border-gray-100 text-center"
-          >
-            <p class="text-gray-600">
-              {#if !isLocationInServiceArea}
-                {#if locationError}
-                  {locationError}
-                {:else}
-                  One or both locations are outside our service area.
-                {/if}
-              {:else}
-                Please complete all required fields to see price estimate.
-              {/if}
+        <!-- Next step prompt -->
+        {#if isLocationInServiceArea && lat1 && lng1 && lat2 && lng2}
+          <div class="p-4 bg-white rounded-lg border border-blue-100 shadow-sm">
+            <div class="flex items-center">
+              <div class="mr-3 flex-shrink-0">
+                <svg
+                  class="h-6 w-6 text-blue-500"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M9 5l7 7-7 7"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-800">
+                  Ready for the next step!
+                </p>
+                <p class="text-xs text-gray-600 mt-0.5">
+                  Continue to customize your package and see pricing details
+                </p>
+              </div>
+            </div>
+          </div>
+        {:else if !isLocationInServiceArea && lat2 && lng2}
+          <div class="p-4 bg-white rounded-lg border border-red-100 shadow-sm">
+            <p class="text-sm text-red-600">
+              Please select a location within our service area to proceed.
+            </p>
+          </div>
+        {:else}
+          <div class="p-4 bg-white rounded-lg border border-gray-100 shadow-sm">
+            <p class="text-sm text-gray-600">
+              Complete all required fields to proceed to the next step.
             </p>
           </div>
         {/if}
       </div>
     </div>
-  </div>
 
-  <div class="flex justify-between gap-4 mt-8">
-    <button
-      type="button"
-      on:click|preventDefault={() => dispatch("back")}
-      class="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
-    >
-      <Add /> Back
-    </button>
+    <!-- In-City vs Between Cities Selection -->
+    <div class="mb-6">
+      <label class="block text-sm font-medium text-gray-700 mb-3">
+        Delivery Type <span class="text-red-500">*</span>
+      </label>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label
+          class="flex items-center p-4 border rounded-lg cursor-pointer hover:bg-gray-50 {radio ===
+          0
+            ? 'border-secondary bg-secondary/5'
+            : 'border-gray-200'}"
+        >
+          <input
+            type="radio"
+            name="deliveryType"
+            value="0"
+            bind:group={radio}
+            on:change={() => handleRadioChange(0)}
+            class="text-secondary focus:ring-secondary h-4 w-4"
+          />
+          <div class="ml-3">
+            <span class="block text-sm font-medium text-gray-900">In City</span>
+            <span class="text-xs text-gray-500"
+              >Delivery within {originCity || "the same city"}</span
+            >
+          </div>
+        </label>
 
-    <button
-      type="button"
-      on:click={handleNext}
-      class="bg-secondary text-white font-medium py-3 px-6 rounded-lg hover:bg-secondary/90 transition-colors flex items-center gap-2 shadow-md hover:shadow-lg"
-    >
-      Continue <ArrowRight />
-    </button>
+        <label
+          class="flex items-center p-4 border rounded-lg cursor-pointer hover:bg-gray-50 {radio ===
+          1
+            ? 'border-secondary bg-secondary/5'
+            : 'border-gray-200'}"
+        >
+          <input
+            type="radio"
+            name="deliveryType"
+            value="1"
+            bind:group={radio}
+            on:change={() => handleRadioChange(1)}
+            class="text-secondary focus:ring-secondary h-4 w-4"
+          />
+          <div class="ml-3">
+            <span class="block text-sm font-medium text-gray-900"
+              >Between Cities</span
+            >
+            <span class="text-xs text-gray-500">Delivery to another city</span>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <!-- Navigation Buttons -->
+    <div class="flex justify-between mt-8">
+      <button
+        type="button"
+        on:click={() => dispatch("back")}
+        class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-5 w-5 mr-2"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M15 19l-7-7 7-7"
+          />
+        </svg>
+        Back
+      </button>
+
+      <button
+        type="button"
+        on:click={handleNext}
+        class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-secondary hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-offset-2"
+        disabled={!isLocationInServiceArea}
+      >
+        Continue
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-5 w-5 ml-2"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M9 5l7 7-7 7"
+          />
+        </svg>
+      </button>
+    </div>
   </div>
 </div>

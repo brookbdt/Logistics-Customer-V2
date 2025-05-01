@@ -2,6 +2,7 @@ import { WEBAPP_URL } from "$env/static/private";
 import { prisma } from "$lib/utils/prisma.js";
 import { fail, redirect } from "@sveltejs/kit";
 import { randomBytes } from "crypto";
+import { zod } from "sveltekit-superforms/adapters";
 import { superValidate } from "sveltekit-superforms/server";
 import { z } from "zod";
 
@@ -55,10 +56,11 @@ export const load = async (event) => {
     {
       email: session?.userData.email || "",
       phoneNumber: session?.userData.phoneNumber || "",
+
       firstName: session?.userData.userName || "",
       lastName: session?.userData.userName || "",
     } satisfies addPaymentType,
-    addPaymentSchema
+    zod(addPaymentSchema)
   );
   console.log({ orderDetail });
 
@@ -139,15 +141,7 @@ export const load = async (event) => {
       },
     });
 
-    // Check the order status to determine where to redirect
-    // If the order is already claimed, redirect to order details
-    // If the order is unclaimed but has pay_now option, also redirect to order details
-    if (orderDetail?.orderStatus === "CLAIMED" || orderDetail?.paymentOption === "pay_now") {
-      throw redirect(302, `/order-detail/${orderDetail?.id}`);
-    } else {
-      // For other cases, stay on the finalize page
-      throw redirect(302, `/finalize-order/${orderDetail?.id}`);
-    }
+
   } else {
   }
 

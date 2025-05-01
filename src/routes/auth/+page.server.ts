@@ -5,6 +5,7 @@ import { fail, redirect } from "@sveltejs/kit";
 import bcryptjs from "bcryptjs";
 import { randomBytes } from "crypto";
 import jwt from "jsonwebtoken";
+import { zod } from "sveltekit-superforms/adapters";
 import { setError, superValidate } from "sveltekit-superforms/server";
 import { z } from "zod";
 
@@ -13,7 +14,7 @@ const sendEmailSchema = z.object({
 });
 
 export const load = async (event) => {
-  const sendEmailForm = await superValidate(sendEmailSchema);
+  const sendEmailForm = await superValidate(zod(sendEmailSchema));
 
   const { session } = await event.parent();
 
@@ -26,7 +27,7 @@ export const load = async (event) => {
 
 export const actions = {
   sendEmail: async ({ request }) => {
-    const sendEmailForm = await superValidate(request, sendEmailSchema);
+    const sendEmailForm = await superValidate(request, zod(sendEmailSchema));
     if (!sendEmailForm.valid) {
       return fail(400, { sendEmailForm });
     }

@@ -16,7 +16,8 @@
   // @ts-ignore
   // Import our new components
   import OrderAcceptedAnimation from "$lib/components/order-accepted-animation.svelte";
-  import PaymentIncentives from "$lib/components/payment-incentives.svelte";
+  // Import socket functionality for realtime updates
+  import { subscribeToOrder } from "$lib/socket/client";
   //lol
   dayjs.extend(relativeTime);
 
@@ -41,10 +42,6 @@
   let timeWaiting = 0;
   let firebaseUnsubscribe: Function | null = null;
   let showAcceptanceAnimation = false;
-  let discountTimeLeft = 600; // 10 minutes in seconds
-  let discountInterval: ReturnType<typeof setInterval>;
-  let applyDiscount = false;
-  let discountAmount = 0.05; // 5% discount for quick payment
   let pulseEffect = false;
   let showTips = false;
   let currentTip = 0;
@@ -52,17 +49,22 @@
 
   const deliveryTips = [
     "Premium customers get priority processing and exclusive discounts!",
-    "Our drivers are rated 4.8/5 stars on average by our customers.",
+    "Our system checks order status every few seconds - updates appear in real-time!",
     "We use AI-powered route optimization to ensure the fastest delivery.",
-    "Our packaging is eco-friendly and 100% recyclable.",
+    "Once your order is accepted, you'll get instant notifications about status changes.",
     "Track your package in real-time once it's on the way!",
     "Our customer satisfaction rate is 98% - among the highest in the industry!",
     "Need help? Our 24/7 customer support is just a tap away.",
+    "After order acceptance, you can view detailed tracking information in the Order Details page.",
   ];
 
-  $: isOrderAccepted = data.orderDetail?.orderStatus === "CLAIMED";
+  // Payment options handling
+  $: isOrderAccepted = data.orderDetail?.orderStatus === "ACCEPTED";
   $: canProceedToPayment =
-    (isOrderAccepted && !data.orderDetail?.paymentStatus) ||
+    (isOrderAccepted &&
+      !data.orderDetail?.paymentStatus &&
+      (data.orderDetail?.paymentOption === "pay_now" ||
+        data.orderDetail?.paymentOption === "pay_on_acceptance")) ||
     (data.orderDetail?.paymentOption === "pay_now" &&
       !data.orderDetail?.paymentStatus);
   $: showPaymentComponent =
@@ -72,12 +74,20 @@
     componentsOrder === 5;
 
   $: estimatedPrice = data.orderDetail?.totalCost || 0;
-  $: discountedPrice = applyDiscount
-    ? estimatedPrice * (1 - discountAmount)
-    : estimatedPrice;
 
-  // Format seconds to MM:SS
-  $: formattedDiscountTime = `${Math.floor(discountTimeLeft / 60)}:${(discountTimeLeft % 60).toString().padStart(2, "0")}`;
+  // Function to handle proceeding to payment
+  function handleProceedToPayment() {
+    if (canProceedToPayment) {
+      componentsOrder = 5;
+    } else {
+      // Show a toast notification explaining why they can't proceed
+      toast.push(
+        isOrderAccepted
+          ? "This order has already been paid for."
+          : "Please wait for the warehouse to accept your order before proceeding to payment."
+      );
+    }
+  }
 
   // Automatically set the component order to 4 (review) if the order is not yet accepted
   $: if (!isOrderAccepted && componentsOrder === 5) {
@@ -99,21 +109,43 @@
   async function pollOrderStatus() {
     if (!browser || !data.orderDetail?.id) return;
 
+    // Initial polling interval - check every 5 seconds
+    const INITIAL_POLLING_INTERVAL = 5000;
+    // We'll increase the interval after the order is accepted
+    const ACCEPTED_POLLING_INTERVAL = 15000;
+
+    let currentPollingInterval = INITIAL_POLLING_INTERVAL;
+
     pollingInterval = setInterval(async () => {
-      // This causes a re-fetch of the data using the load function
-      await invalidate(`orders:${data.orderDetail?.id}`);
+      try {
+        // This causes a re-fetch of the data using the load function
+        await invalidate(`orders:${data.orderDetail?.id}`);
 
-      // Check if order status has changed to CLAIMED
-      if (
-        data.orderDetail?.orderStatus === "CLAIMED" &&
-        previousOrderStatus !== "CLAIMED"
-      ) {
-        handleOrderAccepted();
+        // Check if order status has changed to ACCEPTED
+        if (
+          data.orderDetail?.orderStatus === "ACCEPTED" &&
+          previousOrderStatus !== "ACCEPTED"
+        ) {
+          handleOrderAccepted();
+
+          // After acceptance, we can poll less frequently
+          clearInterval(pollingInterval);
+          currentPollingInterval = ACCEPTED_POLLING_INTERVAL;
+          pollingInterval = setInterval(async () => {
+            try {
+              await invalidate(`orders:${data.orderDetail?.id}`);
+            } catch (error) {
+              console.error("Error polling for order updates:", error);
+            }
+          }, currentPollingInterval);
+        }
+
+        // Update previous status for next comparison
+        previousOrderStatus = data.orderDetail?.orderStatus;
+      } catch (error) {
+        console.error("Error polling for order updates:", error);
       }
-
-      // Update previous status for next comparison
-      previousOrderStatus = data.orderDetail?.orderStatus;
-    }, 5000); // Poll every 5 seconds
+    }, currentPollingInterval);
 
     return pollingInterval;
   }
@@ -122,6 +154,20 @@
   function handleOrderAccepted() {
     // Show celebration effects
     showAcceptanceAnimation = true;
+
+    // Add pulse effect to UI
+    pulseEffect = true;
+    setTimeout(() => {
+      pulseEffect = false;
+    }, 5000);
+
+    // Enable delivery tips display
+    showTips = true;
+
+    // Start cycling through delivery tips
+    tipInterval = setInterval(() => {
+      currentTip = (currentTip + 1) % deliveryTips.length;
+    }, 8000);
 
     // Show toast notification
     toast.push(
@@ -135,48 +181,6 @@
         duration: 6000,
       }
     );
-
-    // Start discount countdown
-    startDiscountCountdown();
-  }
-
-  function startDiscountCountdown() {
-    applyDiscount = true;
-    clearInterval(discountInterval);
-    discountTimeLeft = 600; // 10 minutes in seconds
-
-    discountInterval = setInterval(() => {
-      discountTimeLeft--;
-      if (discountTimeLeft <= 0) {
-        clearInterval(discountInterval);
-        applyDiscount = false;
-
-        toast.push(
-          "Special discount offer has expired! Regular pricing now applies.",
-          {
-            theme: {
-              "--toastBackground": "#F59E0B",
-              "--toastColor": "white",
-              "--toastBarBackground": "#D97706",
-            },
-          }
-        );
-      }
-    }, 1000);
-  }
-
-  // Add a function to handle payment button click
-  function handleProceedToPayment() {
-    if (canProceedToPayment) {
-      componentsOrder = 5;
-    } else {
-      // Show a toast notification explaining why they can't proceed
-      toast.push(
-        isOrderAccepted
-          ? "This order has already been paid for."
-          : "Please wait for the warehouse to accept your order before proceeding to payment."
-      );
-    }
   }
 
   onMount(() => {
@@ -205,23 +209,37 @@
       showOrderSummary = true;
     }, 1000);
 
-    // Setup Firebase real-time listener for order status
+    // Setup polling for order status - this is our primary update mechanism
     pollOrderStatus();
 
-    // If order is already accepted, show discount
-    if (isOrderAccepted && !data.orderDetail?.paymentStatus) {
-      startDiscountCountdown();
+    // Attempt to subscribe to realtime order updates via socket as an enhancement
+    // This is not critical and will gracefully fail if socket server is unavailable
+    if (data.orderDetail?.id) {
+      try {
+        console.log(
+          `Attempting to subscribe to realtime updates for order: ${data.orderDetail.id}`
+        );
+        subscribeToOrder(data.orderDetail.id);
+      } catch (error) {
+        console.log(
+          "Could not subscribe to socket updates, falling back to polling:",
+          error
+        );
+        // Continue with polling only, no need to handle the error
+      }
     }
   });
 
   onDestroy(() => {
     clearInterval(interval);
-    clearInterval(discountInterval);
 
-    // // Clean up Firebase listener
-    // if (firebaseUnsubscribe) {
-    //   firebaseUnsubscribe();
-    // }
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+    }
+
+    if (tipInterval) {
+      clearInterval(tipInterval);
+    }
   });
 
   // Extract coordinates from mapLocation strings
@@ -406,7 +424,7 @@
                 on:click={() => (componentsOrder = 1)}
                 class="{componentsOrder >= 1
                   ? 'bg-secondary text-white'
-                  : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+                  : 'bg-gray-200 text-gray-500'} rounded-full h-8 w-8 sm:h-10 sm:w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
               >
                 1
               </button>
@@ -425,7 +443,7 @@
                   componentsOrder >= 2 ? (componentsOrder = 2) : null}
                 class="{componentsOrder >= 2
                   ? 'bg-secondary text-white'
-                  : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+                  : 'bg-gray-200 text-gray-500'} rounded-full h-8 w-8 sm:h-10 sm:w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
               >
                 2
               </button>
@@ -444,7 +462,7 @@
                   componentsOrder >= 3 ? (componentsOrder = 3) : null}
                 class="{componentsOrder >= 3
                   ? 'bg-secondary text-white'
-                  : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+                  : 'bg-gray-200 text-gray-500'} rounded-full h-8 w-8 sm:h-10 sm:w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
               >
                 3
               </button>
@@ -463,7 +481,7 @@
                   componentsOrder >= 4 ? (componentsOrder = 4) : null}
                 class="{componentsOrder >= 4
                   ? 'bg-secondary text-white'
-                  : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+                  : 'bg-gray-200 text-gray-500'} rounded-full h-8 w-8 sm:h-10 sm:w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
               >
                 4
               </button>
@@ -480,7 +498,7 @@
               <div
                 class="{componentsOrder >= 5
                   ? 'bg-secondary text-white'
-                  : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md"
+                  : 'bg-gray-200 text-gray-500'} rounded-full h-8 w-8 sm:h-10 sm:w-10 flex justify-center items-center transition-all duration-300 shadow-md"
               >
                 5
               </div>
@@ -917,14 +935,14 @@
                   >
                   <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
                     <div
-                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType ===
+                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType.toString() ===
                       'NORMAL'
                         ? 'bg-secondary/10 border-secondary text-secondary'
                         : 'border-gray-200 text-gray-700'}"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType ===
+                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType.toString() ===
                         'NORMAL'
                           ? 'text-secondary'
                           : 'text-gray-500'}"
@@ -948,14 +966,14 @@
                     </div>
 
                     <div
-                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType ===
+                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType.toString() ===
                       'FRAGILE'
                         ? 'bg-secondary/10 border-secondary text-secondary'
                         : 'border-gray-200 text-gray-700'}"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType ===
+                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType.toString() ===
                         'FRAGILE'
                           ? 'text-secondary'
                           : 'text-gray-500'}"
@@ -979,14 +997,14 @@
                     </div>
 
                     <div
-                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType ===
+                      class="flex items-center p-3 sm:p-4 border rounded-lg {goodsType.toString() ===
                       'PERISHABLE'
                         ? 'bg-secondary/10 border-secondary text-secondary'
                         : 'border-gray-200 text-gray-700'}"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType ===
+                        class="h-5 w-5 sm:h-6 sm:w-6 mr-3 {goodsType.toString() ===
                         'PERISHABLE'
                           ? 'text-secondary'
                           : 'text-gray-500'}"
@@ -1140,29 +1158,31 @@
                 {/if}
 
                 <!-- Package Dimensions -->
-                <div class="mt-8">
-                  <h3 class="text-lg font-semibold text-gray-800 mb-4">
+                <div class="mt-6 sm:mt-8">
+                  <h3
+                    class="text-base sm:text-lg font-semibold text-gray-800 mb-3 sm:mb-4"
+                  >
                     Package Dimensions
                   </h3>
-                  <div class="grid grid-cols-2 gap-4 mb-4">
+                  <div class="grid grid-cols-2 gap-3 sm:gap-4 mb-3 sm:mb-4">
                     <div>
                       <label
-                        class="block text-sm font-medium text-gray-700 mb-1"
+                        class="block text-xs sm:text-sm font-medium text-gray-700 mb-1"
                         >Length (cm)</label
                       >
                       <div
-                        class="p-3 bg-gray-50 rounded-lg border border-gray-200"
+                        class="p-2 sm:p-3 bg-gray-50 rounded-lg border border-gray-200 text-xs sm:text-sm"
                       >
                         {length ? length.toFixed(1) : "N/A"}
                       </div>
                     </div>
                     <div>
                       <label
-                        class="block text-sm font-medium text-gray-700 mb-1"
+                        class="block text-xs sm:text-sm font-medium text-gray-700 mb-1"
                         >Width (cm)</label
                       >
                       <div
-                        class="p-3 bg-gray-50 rounded-lg border border-gray-200"
+                        class="p-2 sm:p-3 bg-gray-50 rounded-lg border border-gray-200 text-xs sm:text-sm"
                       >
                         {width ? width.toFixed(1) : "N/A"}
                       </div>
@@ -1307,7 +1327,7 @@
                 >
                   {processingStages[processingStage].icon}
                 </div>
-                <div>
+                <div class="flex-grow">
                   <p class="font-medium text-gray-800">
                     {processingStages[processingStage].text}
                   </p>
@@ -1315,6 +1335,11 @@
                     Your order is being processed by our warehouse team. This
                     may take a few moments.
                   </p>
+                </div>
+                <div class="ml-2 flex-shrink-0">
+                  <span
+                    class="inline-flex h-2 w-2 rounded-full bg-secondary animate-ping opacity-75"
+                  ></span>
                 </div>
               </div>
 
@@ -1324,10 +1349,34 @@
                   class="p-4 bg-yellow-50 rounded-lg border border-yellow-100 mb-4"
                   in:slide={{ duration: 300 }}
                 >
-                  <p class="text-sm text-yellow-800">
-                    We're still working on processing your order. This might
-                    take a bit longer than usual due to high demand.
-                  </p>
+                  <div class="flex items-center">
+                    <div class="mr-3 text-yellow-500">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="h-5 w-5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                        />
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-sm text-yellow-800">
+                        We're still working on processing your order. This might
+                        take a bit longer than usual due to high demand.
+                      </p>
+                      <p class="text-xs text-yellow-600 mt-1">
+                        Updates will appear automatically when available. No
+                        need to refresh.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               {/if}
 
@@ -1353,14 +1402,14 @@
             class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl shadow-lg overflow-hidden mb-6"
             in:fly={{ y: 20, duration: 500 }}
           >
-            <div class="p-5">
+            <div class="p-4 sm:p-5">
               <div class="flex items-start">
                 <div
-                  class="flex-shrink-0 w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mr-4 animate-bounce"
+                  class="flex-shrink-0 w-10 h-10 sm:w-12 sm:h-12 bg-green-100 rounded-full flex items-center justify-center mr-3 sm:mr-4 animate-bounce"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    class="h-7 w-7 text-green-600"
+                    class="h-6 w-6 sm:h-7 sm:w-7 text-green-600"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -1374,35 +1423,31 @@
                   </svg>
                 </div>
                 <div>
-                  <h3 class="text-xl font-bold text-green-800">
+                  <h3 class="text-lg sm:text-xl font-bold text-green-800">
                     Order Accepted! 🎉
                   </h3>
                   <p class="text-sm text-green-700 mt-1">
                     Great news! Your order has been accepted by our warehouse
-                    team and is ready for payment.
+                    team and is {data.orderDetail?.paymentOption ===
+                      "pay_now" ||
+                    data.orderDetail?.paymentOption === "pay_on_acceptance"
+                      ? "ready for payment"
+                      : "being processed"}.
                   </p>
                 </div>
               </div>
 
-              <!-- Limited Time Discount Section -->
-              {#if applyDiscount}
-                <PaymentIncentives
-                  show={true}
-                  discountPercentage={discountAmount * 100}
-                  discountExpiryMinutes={10}
-                  totalOrders={Math.floor(Math.random() * 100) + 1000}
-                />
-              {/if}
-
               <!-- Benefits Section -->
-              <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div
+                class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3 sm:grid-cols-2 sm:gap-5"
+              >
                 <div
-                  class="bg-white p-3 rounded-lg shadow-sm flex items-center"
+                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
                 >
-                  <div class="bg-green-100 p-2 rounded-full mr-3">
+                  <div class="bg-green-100 p-3 rounded-full mb-3">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-5 w-5 text-green-600"
+                      class="h-6 w-6 text-green-600"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -1415,18 +1460,20 @@
                       />
                     </svg>
                   </div>
-                  <div class="text-sm">
-                    <p class="font-medium text-gray-800">Secure Payment</p>
-                    <p class="text-gray-500 text-xs">100% secure transaction</p>
-                  </div>
+                  <p class="font-medium text-gray-800 text-sm sm:text-base">
+                    Secure Payment
+                  </p>
+                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
+                    100% secure transaction
+                  </p>
                 </div>
                 <div
-                  class="bg-white p-3 rounded-lg shadow-sm flex items-center"
+                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
                 >
-                  <div class="bg-green-100 p-2 rounded-full mr-3">
+                  <div class="bg-green-100 p-3 rounded-full mb-3">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-5 w-5 text-green-600"
+                      class="h-6 w-6 text-green-600"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -1439,18 +1486,20 @@
                       />
                     </svg>
                   </div>
-                  <div class="text-sm">
-                    <p class="font-medium text-gray-800">Priority Delivery</p>
-                    <p class="text-gray-500 text-xs">Pay now, ship first</p>
-                  </div>
+                  <p class="font-medium text-gray-800 text-sm sm:text-base">
+                    Priority Delivery
+                  </p>
+                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
+                    Pay now, ship first
+                  </p>
                 </div>
                 <div
-                  class="bg-white p-3 rounded-lg shadow-sm flex items-center"
+                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
                 >
-                  <div class="bg-green-100 p-2 rounded-full mr-3">
+                  <div class="bg-green-100 p-3 rounded-full mb-3">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-5 w-5 text-green-600"
+                      class="h-6 w-6 text-green-600"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -1463,38 +1512,40 @@
                       />
                     </svg>
                   </div>
-                  <div class="text-sm">
-                    <p class="font-medium text-gray-800">Instant Processing</p>
-                    <p class="text-gray-500 text-xs">
-                      No delays, immediate handling
-                    </p>
-                  </div>
+                  <p class="font-medium text-gray-800 text-sm sm:text-base">
+                    Instant Processing
+                  </p>
+                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
+                    No delays, immediate handling
+                  </p>
                 </div>
               </div>
 
               <!-- CTA Button -->
-              <div class="mt-5 flex justify-center">
-                <button
-                  on:click={handleProceedToPayment}
-                  class="w-full sm:w-auto bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 transform hover:translate-y-[-2px] transition-all duration-200"
-                >
-                  Proceed to Payment
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-5 w-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
+              {#if data.orderDetail?.paymentOption === "pay_now" || data.orderDetail?.paymentOption === "pay_on_acceptance"}
+                <div class="mt-5 flex justify-center">
+                  <button
+                    on:click={handleProceedToPayment}
+                    class="w-full sm:w-auto bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 transform hover:translate-y-[-2px] transition-all duration-200"
                   >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M17 8l4 4m0 0l-4 4m4-4H3"
-                    />
-                  </svg>
-                </button>
-              </div>
+                    Proceed to Payment
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-5 w-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M17 8l4 4m0 0l-4 4m4-4H3"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -1590,7 +1641,7 @@
                 <div class="mb-6">
                   <h4 class="font-medium text-gray-700 mb-2">Delivery Route</h4>
                   <div
-                    class="h-64 rounded-lg overflow-hidden border border-gray-200"
+                    class="h-48 sm:h-64 rounded-lg overflow-hidden border border-gray-200"
                   >
                     <GoogleMaps
                       lat={pickupCoordinates.lat}
@@ -1605,8 +1656,14 @@
                   <!-- Route legend -->
                   <div class="flex justify-between mt-2 text-xs text-gray-600">
                     <div class="flex items-center">
-                      <img src={pickUpIcon} alt="Pickup" class="w-4 h-4 mr-1" />
-                      <span>{data.orderDetail?.originCity || "Pickup"}</span>
+                      <img
+                        src={pickUpIcon}
+                        alt="Pickup"
+                        class="w-3 h-3 sm:w-4 sm:h-4 mr-1"
+                      />
+                      <span class="text-xs"
+                        >{data.orderDetail?.originCity || "Pickup"}</span
+                      >
                     </div>
                     <div
                       class="flex-1 mx-2 border-t border-dashed border-gray-300 self-center"
@@ -1615,9 +1672,9 @@
                       <img
                         src={dropOffIcon}
                         alt="Delivery"
-                        class="w-4 h-4 mr-1"
+                        class="w-3 h-3 sm:w-4 sm:h-4 mr-1"
                       />
-                      <span
+                      <span class="text-xs"
                         >{data.orderDetail?.destinationCity || "Delivery"}</span
                       >
                     </div>
@@ -1630,7 +1687,7 @@
                       <div class="flex items-center">
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
-                          class="h-4 w-4 mr-1 text-gray-500"
+                          class="h-3 w-3 sm:h-4 sm:w-4 mr-1 text-gray-500"
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -1767,34 +1824,43 @@
                 <h4 class="font-medium text-gray-700 mb-2">Price Summary</h4>
                 <div class="border-t border-gray-200 pt-4">
                   <div class="flex justify-between mb-2">
-                    <span class="text-sm text-gray-600">Base Shipping</span>
-                    <span class="text-sm font-medium text-gray-800">
-                      ${formatPrice(data.orderDetail?.baseShippingCost || 0)}
+                    <span class="text-xs sm:text-sm text-gray-600"
+                      >Base Shipping</span
+                    >
+                    <span class="text-xs sm:text-sm font-medium text-gray-800">
+                      ETB {formatPrice(data.orderDetail?.baseShippingCost || 0)}
                     </span>
                   </div>
                   <div class="flex justify-between mb-2">
-                    <span class="text-sm text-gray-600">Packaging</span>
-                    <span class="text-sm font-medium text-gray-800">
-                      ${formatPrice(data.orderDetail?.packagingCost || 0)}
+                    <span class="text-xs sm:text-sm text-gray-600"
+                      >Packaging</span
+                    >
+                    <span class="text-xs sm:text-sm font-medium text-gray-800">
+                      ETB {formatPrice(data.orderDetail?.packagingCost || 0)}
                     </span>
                   </div>
-                  {#if data.orderDetail?.totalAdditionalFees > 0}
+                  {#if data.orderDetail?.totalAdditionalFees != null && data.orderDetail.totalAdditionalFees > 0}
                     <div class="flex justify-between mb-2">
-                      <span class="text-sm text-gray-600">Additional Fees</span>
-                      <span class="text-sm font-medium text-gray-800">
-                        ${formatPrice(
-                          data.orderDetail?.totalAdditionalFees || 0
-                        )}
+                      <span class="text-xs sm:text-sm text-gray-600"
+                        >Additional Fees</span
+                      >
+                      <span
+                        class="text-xs sm:text-sm font-medium text-gray-800"
+                      >
+                        ETB {formatPrice(data.orderDetail.totalAdditionalFees)}
                       </span>
                     </div>
                   {/if}
                   <div class="border-t border-gray-200 pt-2 mt-2">
                     <div class="flex justify-between">
-                      <span class="text-base font-medium text-gray-800"
+                      <span
+                        class="text-sm sm:text-base font-medium text-gray-800"
                         >Total</span
                       >
-                      <span class="text-base font-bold text-secondary">
-                        ${formatPrice(data.orderDetail?.totalCost || 0)}
+                      <span
+                        class="text-sm sm:text-base font-bold text-secondary"
+                      >
+                        ETB {formatPrice(data.orderDetail?.totalCost || 0)}
                       </span>
                     </div>
                   </div>
@@ -1880,11 +1946,11 @@
 
               <button
                 on:click={() => (componentsOrder = 5)}
-                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white font-bold py-4 px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white text-sm sm:text-base font-medium py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
+                  class="h-4 w-4 sm:h-5 sm:w-5"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -1945,6 +2011,89 @@
                 >
               </div>
             </div>
+          {:else if data.orderDetail?.paymentOption === "pay_on_pickup"}
+            <!-- Pay on pickup option -->
+            <div class="flex flex-col items-center">
+              <div
+                class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span
+                  >You've selected to pay on pickup. No payment is required now.</span
+                >
+              </div>
+            </div>
+          {:else if data.orderDetail?.paymentOption === "pay_on_acceptance" && isOrderAccepted && !data.orderDetail?.paymentStatus}
+            <!-- Pay on acceptance and order is accepted -->
+            <div class="space-y-3 w-full max-w-md mx-auto">
+              <div class="text-center text-sm text-gray-600 mb-2">
+                <span
+                  class="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse mr-1"
+                ></span>
+                <span>Your order is accepted. Please complete payment now.</span
+                >
+              </div>
+
+              <button
+                on:click={() => (componentsOrder = 5)}
+                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white text-sm sm:text-base font-medium py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-4 w-4 sm:h-5 sm:w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+                  />
+                </svg>
+                Complete Payment Now
+              </button>
+            </div>
+          {:else if !isOrderAccepted && data.orderDetail?.paymentOption === "pay_on_acceptance"}
+            <!-- Pay on acceptance but order not yet accepted -->
+            <div class="flex flex-col items-center">
+              <div
+                class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span
+                  >You've selected to pay after order acceptance. Please wait
+                  for confirmation.</span
+                >
+              </div>
+            </div>
           {:else if !isOrderAccepted}
             <div class="flex flex-col items-center">
               <button
@@ -1993,48 +2142,27 @@
             </div>
           {:else}
             <div class="space-y-3 w-full max-w-md mx-auto">
-              <!-- Social Proof: People Viewing -->
-              <div class="text-center text-sm text-gray-600 mb-2">
-                <span
-                  class="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse mr-1"
-                ></span>
-                <span
-                  >{Math.floor(Math.random() * 3) + 2} people currently viewing this
-                  order</span
-                >
-              </div>
-
               <!-- Payment Button -->
-              <div class="relative">
-                {#if applyDiscount}
-                  <div
-                    class="absolute -top-3 right-3 bg-yellow-300 text-yellow-800 text-xs font-bold px-2 py-1 rounded-full animate-pulse z-10"
-                  >
-                    {discountAmount * 100}% OFF
-                  </div>
-                {/if}
-
-                <button
-                  on:click={handleProceedToPayment}
-                  class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white font-bold py-4 px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+              <button
+                on:click={handleProceedToPayment}
+                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white font-bold py-4 px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
                 >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-5 w-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
-                    />
-                  </svg>
-                  Proceed to Payment
-                </button>
-              </div>
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+                  />
+                </svg>
+                Proceed to Payment
+              </button>
 
               <!-- Payment Security Note -->
               <div
@@ -2079,25 +2207,26 @@
 <!-- Celebration animation when order is accepted -->
 {#if showAcceptanceAnimation}
   <div
-    class="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
+    class="fixed inset-0 flex items-center justify-center z-50 pointer-events-none px-4"
     in:fade={{ duration: 300 }}
     out:fade={{ duration: 500, delay: 5000 }}
   >
     <div class="relative">
       <!-- Celebration text -->
       <div
-        class="text-center p-8 rounded-xl bg-green-100/80 shadow-lg backdrop-blur-sm transform scale-100 animate-pulse-slow"
+        class="text-center p-4 sm:p-8 rounded-xl bg-green-100/80 shadow-lg backdrop-blur-sm transform scale-100 animate-pulse-slow"
         in:scale={{ duration: 600, start: 0.5, opacity: 0 }}
       >
         <h2
-          class="text-3xl md:text-5xl font-bold text-green-600 mb-4 animate-bounce-slow"
+          class="text-xl sm:text-3xl md:text-5xl font-bold text-green-600 mb-3 sm:mb-4 animate-bounce-slow"
         >
           🎉 Order Accepted! 🎉
         </h2>
-        <p class="text-xl text-green-800 max-w-lg">
-          Your order is now ready for payment! Take advantage of our <span
-            class="font-bold text-yellow-600">limited time offer</span
-          > below!
+        <p class="text-base sm:text-xl text-green-800 max-w-lg">
+          Your order has been accepted and is now being processed!
+          {#if data.orderDetail?.paymentOption === "pay_now" || data.orderDetail?.paymentOption === "pay_on_acceptance"}
+            Please complete your payment to continue.
+          {/if}
         </p>
       </div>
     </div>

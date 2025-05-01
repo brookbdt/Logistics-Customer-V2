@@ -14,22 +14,6 @@
   let className = "";
   export { className as class };
 
-  // Add discount timer
-  let discountTimeLeft = 600; // 10 minutes in seconds
-  let formattedDiscountTime = `${Math.floor(discountTimeLeft / 60)}:${(discountTimeLeft % 60).toString().padStart(2, "0")}`;
-
-  // Update discount timer every second
-  if (typeof window !== "undefined") {
-    const discountInterval = setInterval(() => {
-      discountTimeLeft -= 1;
-      if (discountTimeLeft <= 0) {
-        clearInterval(discountInterval);
-        discountTimeLeft = 0;
-      }
-      formattedDiscountTime = `${Math.floor(discountTimeLeft / 60)}:${(discountTimeLeft % 60).toString().padStart(2, "0")}`;
-    }, 1000);
-  }
-
   $: if (form?.checkoutUrl) {
     // @ts-ignores
     location.href = form.checkoutUrl.checkout_url;
@@ -70,7 +54,7 @@
       <p class="text-sm opacity-90">
         {#if data.orderDetail && "paymentOption" in data.orderDetail && data.orderDetail.paymentOption === "pay_now"}
           Complete your order payment securely
-        {:else if data.orderDetail?.orderStatus === "CLAIMED"}
+        {:else if data.orderDetail?.orderStatus === "ACCEPTED"}
           Your order has been accepted! Complete payment securely
         {:else}
           Complete your order securely
@@ -178,40 +162,6 @@
           : "application/x-www-form-urlencoded"}
       >
         <div in:fade={{ duration: 300 }}>
-          <!-- Payment Incentives -->
-          <div
-            class="bg-secondary/5 border border-secondary/20 rounded-lg p-3 mb-4"
-          >
-            <div class="flex items-start">
-              <div
-                class="bg-secondary/10 p-1.5 rounded-full mr-2 mt-0.5 flex-shrink-0"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-3.5 w-3.5 text-secondary"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-              </div>
-              <div>
-                <span class="text-xs font-medium text-secondary"
-                  >Limited Time Offer!</span
-                >
-                <p class="text-xs text-gray-600 mt-0.5">
-                  Pay now and get 5% off your order! Offer expires in {formattedDiscountTime}.
-                </p>
-              </div>
-            </div>
-          </div>
-
           <!-- Social Proof -->
           <div class="bg-gray-50 rounded-lg p-3 mb-4">
             <div class="flex items-center justify-between mb-2">
@@ -451,32 +401,42 @@
           </div>
 
           <!-- Payment Button -->
-          <button
-            type="submit"
-            class="w-full bg-secondary flex mt-6 justify-center items-center rounded-lg py-3 text-white font-medium hover:bg-secondary/90 transition-colors"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5 mr-2"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+          <div class="border-t border-gray-200 mt-4 pt-4">
+            <div class="flex justify-between items-center py-2">
+              <span class="text-sm font-medium text-gray-600">Total</span>
+              <span class="text-lg font-bold text-secondary">
+                ETB {formatPrice(data.orderDetail?.totalCost || 0)}
+              </span>
+            </div>
+            <button
+              type="submit"
+              class="w-full bg-secondary flex mt-4 justify-center items-center rounded-lg py-3 text-white font-medium hover:bg-secondary/90 transition-colors"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-              />
-            </svg>
-            {#if selectedPaymentMethod === "bank"}
-              Submit Bank Transfer Details
-            {:else if selectedPaymentMethod === "mobile"}
-              Continue to Mobile Payment
-            {:else}
-              Continue to Secure Payment
-            {/if}
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-5 w-5 mr-2"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                />
+              </svg>
+              {#if selectedPaymentMethod === "bank"}
+                Submit Bank Transfer Details
+              {:else if selectedPaymentMethod === "mobile"}
+                Continue to Mobile Payment (ETB {formatPrice(
+                  data.orderDetail?.totalCost || 0
+                )})
+              {:else}
+                Pay ETB {formatPrice(data.orderDetail?.totalCost || 0)}
+              {/if}
+            </button>
+          </div>
 
           <!-- Terms and Privacy -->
           <p class="text-xs text-gray-500 text-center mt-4">

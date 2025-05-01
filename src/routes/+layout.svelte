@@ -3,23 +3,68 @@
   import Header from "$lib/components/header.svelte";
   import Nprogress from "$lib/components/nprogress.svelte";
   import { fetchNotifications } from "$lib/stores/notificationStore";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import "../app.postcss";
   import { SvelteToast } from "@zerodevx/svelte-toast";
   import { toast } from "@zerodevx/svelte-toast";
   import { browser } from "$app/environment";
   import { goto } from "$app/navigation";
   import NotificationToast from "$lib/components/notification-toast.svelte";
+  import { initSocket, socket } from "$lib/socket/client";
 
   export let data;
+  let unsubscribeSocket: (() => void) | undefined;
 
   // Only fetch notifications on the client side when the user is authenticated
   $: if (browser && $page.data.session?.user) {
     fetchNotifications();
   }
 
-  onMount(async () => {
+  onMount(() => {
     if (!browser) return;
+
+    // Add event listener for new order notifications
+    const handleNewOrder = (event: CustomEvent) => {
+      const order = event.detail;
+      console.log("New order notification received:", order.id);
+
+      // Show toast notification for new order
+      toast.push({
+        msg: `<div class="p-3">
+          <div class="font-semibold">New Order #${order.id}</div>
+          <div class="text-sm">Status: ${order.orderStatus}</div>
+        </div>`,
+        duration: 5000,
+        theme: {
+          "--toastBackground": "#4CAF50",
+          "--toastColor": "white",
+        },
+      });
+    };
+
+    window.addEventListener("new-order", handleNewOrder as EventListener);
+
+    let setupPromises = [];
+
+    if (data.session?.userData?.id) {
+      // Initialize socket connection
+      initSocket();
+
+      unsubscribeSocket = socket.subscribe((socketInstance) => {
+        if (socketInstance?.connected) {
+          // Join customer-specific room
+          socketInstance.emit("join", `user_${data.session?.userData?.id}`);
+
+          // If customer has an associated customer record
+          if (data.session?.customerData?.id) {
+            socketInstance.emit(
+              "join",
+              `customer_${data.session?.customerData?.id}`
+            );
+          }
+        }
+      });
+    }
 
     // Fetch notifications if user is logged in
     if ($page.data.session?.user) {
@@ -27,11 +72,21 @@
     }
 
     // Only proceed with FCM setup if user is logged in
-    if (!$page.data.session?.userData) {
+    if ($page.data.session?.userData) {
+      setupFCM();
+    } else {
       console.log("User not logged in, skipping FCM setup");
-      return;
     }
 
+    // Return cleanup function
+    return () => {
+      if (unsubscribeSocket) unsubscribeSocket();
+      window.removeEventListener("new-order", handleNewOrder as EventListener);
+    };
+  });
+
+  // Separate FCM setup to avoid onMount return type issues
+  async function setupFCM() {
     try {
       console.log("Setting up FCM notifications for logged in user");
 
@@ -48,7 +103,7 @@
 
       if (token) {
         console.log("FCM token obtained, updating server");
-        const userData = $page.data.session.userData;
+        const userData = $page.data.session?.userData;
 
         // Update FCM token in database - similar to Flutter's updateFcmToken()
         const response = await fetch("/update-fcm-token", {
@@ -93,21 +148,6 @@
             target: toastContainer,
           });
 
-          // Handle events
-          toastComponent.$on("action", () => {
-            if (isOrderAccepted) {
-              goto(`/finalize-order/${orderId}`);
-              toast.pop();
-            }
-          });
-
-          toastComponent.$on("click", () => {
-            if (isOrderAccepted) {
-              goto(`/finalize-order/${orderId}`);
-              toast.pop();
-            }
-          });
-
           toastComponent.$on("dismiss", () => {
             toast.pop();
           });
@@ -139,6 +179,10 @@
     } catch (error) {
       console.error("Error setting up FCM notifications:", error);
     }
+  }
+
+  onDestroy(() => {
+    if (unsubscribeSocket) unsubscribeSocket();
   });
 </script>
 

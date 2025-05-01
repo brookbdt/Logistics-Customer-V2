@@ -173,12 +173,13 @@
   let geocoder: google.maps.Geocoder | null = null;
   let addressFromCoordinates = "";
   let isGeocodingAddress = false;
+  let geocodeTimer: ReturnType<typeof setTimeout> | null = null;
   let searchQuery = "";
   let searchResults: google.maps.places.PlaceResult[] = [];
   let isSearching = false;
   let placesService: google.maps.places.PlacesService | null = null;
   let searchBox: google.maps.places.SearchBox | null = null;
-  let mapActionMode: "search" | "pin" | "browse" = "browse";
+  let mapActionMode: "search" | "place" = "place";
   let isMapReady = false;
   let mapInteractionHistory: { lat: number; lng: number }[] = [];
   let activeMapHint = "";
@@ -240,63 +241,217 @@
   }
 
   // Watch for form section changes to reinitialize map when switching to location tab
-  $: if (formSection === "location") {
-    // Force map reinitialization by changing the key
-    setTimeout(() => {
-      mapKey++;
-      if (!isMapReady) {
-        showMapHint("Map is loading... Please wait.", 3000);
+  let isLocationTabActive = false;
+  $: {
+    if (formSection === "location") {
+      if (!isLocationTabActive) {
+        // First time entering location tab in this session
+        isLocationTabActive = true;
+
+        // Reset map key to force a full re-render and initialization
+        setTimeout(() => {
+          mapKey = Date.now(); // Use timestamp for guaranteed uniqueness
+          console.log("Map key updated for initialization:", mapKey);
+          showMapHint("Map is loading... Please wait.", 3000);
+        }, 100); // Slightly longer delay for DOM update
       }
-    }, 0);
+    } else {
+      isLocationTabActive = false; // Reset when leaving the tab
+    }
   }
 
-  // Toggle map interaction mode
-  function setMapMode(mode: "search" | "pin" | "browse") {
+  // Simplify map interaction modes - consolidate to just "search" or "place" (combining browse & pin)
+  function setMapMode(mode: "search" | "place") {
     mapActionMode = mode;
 
     if (mode === "search") {
-      showMapHint("Type a location to search", 5000);
-    } else if (mode === "pin") {
-      showMapHint("Tap anywhere on the map to place a pin", 5000);
+      showMapHint("Enter a location name or address to search", 5000);
     } else {
-      activeMapHint = "";
+      // Place mode (consolidating browse and pin)
+      showMapHint(
+        "Move the map or tap anywhere to place your location pin",
+        5000
+      );
     }
   }
 
   // Real-time search as user types (debounced)
-  let searchTimeout: number | null = null;
-  $: if (mapActionMode === "search" && searchQuery && searchQuery.length > 2) {
+  let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+  let lastSearchQuery = ""; // Track the last executed search query
+
+  function handleSearchInput() {
+    // Clear any existing timeout
     if (searchTimeout) {
       clearTimeout(searchTimeout);
     }
-    searchTimeout = setTimeout(() => {
-      searchPlaces();
-      searchTimeout = null;
-    }, 500) as unknown as number;
+
+    // Only search if the query has changed from last search
+    if (
+      searchQuery &&
+      searchQuery.length > 2 &&
+      searchQuery !== lastSearchQuery
+    ) {
+      searchTimeout = setTimeout(() => {
+        searchPlaces();
+        lastSearchQuery = searchQuery; // Update the last search query
+      }, 500);
+    }
   }
 
   // Search for places
   async function searchPlaces() {
-    if (!searchQuery.trim() || !isMapReady || !geocoder) return;
+    if (!searchQuery.trim() || !isMapReady || isSearching) return;
 
     isSearching = true;
+    showMapHint("Searching for location...");
+
+    // Clear existing errors
+    coordinatesError = "";
 
     try {
-      // First try geocoding the search query
-      const geocodeResult = await geocoder.geocode({ address: searchQuery });
+      // Make sure geocoder exists
+      if (!geocoder && google) {
+        geocoder = new google.maps.Geocoder();
+      }
 
-      if (geocodeResult.results && geocodeResult.results.length > 0) {
-        const location = geocodeResult.results[0].geometry.location;
-        center = [location.lat(), location.lng()];
-        updateCoordinatesFromMap(location.lat(), location.lng());
-        showMapHint("Location found! Map updated.", 3000);
+      if (!geocoder) {
+        throw new Error("Map services not available yet");
+      }
+
+      // Use place search instead of geocoding if available
+      if (placesService) {
+        try {
+          // First try a place search (more accurate for landmarks, businesses)
+          const request = {
+            query: searchQuery,
+            fields: ["name", "geometry"],
+          };
+
+          // Use simpler textSearch to find places
+          placesService.textSearch(request, (results, status) => {
+            if (
+              status === google.maps.places.PlacesServiceStatus.OK &&
+              results &&
+              results.length > 0
+            ) {
+              // Use the first result
+              const place = results[0];
+              const location = place.geometry?.location;
+
+              if (location) {
+                // Successfully found a place
+                updateCoordinatesFromMap(location.lat(), location.lng(), true);
+
+                // Update the marker to be more visible
+                if (marker) {
+                  marker.setIcon({
+                    path: google.maps.SymbolPath.CIRCLE,
+                    fillColor: "#FF0000",
+                    fillOpacity: 0.8,
+                    strokeColor: "#FFFFFF",
+                    strokeWeight: 2,
+                    scale: 10,
+                  });
+
+                  // Add bounce animation to draw attention
+                  marker.setAnimation(google.maps.Animation.BOUNCE);
+                  setTimeout(() => {
+                    if (marker) marker.setAnimation(null);
+                  }, 1500);
+                }
+
+                showMapHint(
+                  `Found: ${place.name || place.formatted_address || "Location"}. Tap marker for options.`,
+                  5000
+                );
+                isSearching = false;
+                return;
+              }
+            }
+
+            // If place search fails, fall back to geocoding
+            fallbackToGeocoding();
+          });
+        } catch (error) {
+          console.warn(
+            "Place search failed, falling back to geocoding:",
+            error
+          );
+          fallbackToGeocoding();
+        }
       } else {
-        showMapHint("No locations found for your search.", 3000);
+        fallbackToGeocoding();
+      }
+
+      // Geocoding fallback function
+      async function fallbackToGeocoding() {
+        try {
+          // Add worldwide scope with bias toward Ethiopia
+          const geocodeRequest = {
+            address: searchQuery,
+            // Bias toward Ethiopia but don't restrict completely
+            region: "et",
+          };
+
+          const geocodeResult = await geocoder!.geocode(geocodeRequest);
+
+          if (geocodeResult.results && geocodeResult.results.length > 0) {
+            const location = geocodeResult.results[0].geometry.location;
+
+            // Update coordinates and map
+            updateCoordinatesFromMap(location.lat(), location.lng(), true);
+
+            // Update the marker to be more visible
+            if (marker) {
+              marker.setIcon({
+                path: google.maps.SymbolPath.CIRCLE,
+                fillColor: "#FF0000",
+                fillOpacity: 0.8,
+                strokeColor: "#FFFFFF",
+                strokeWeight: 2,
+                scale: 10,
+              });
+
+              // Add bounce animation to draw attention
+              marker.setAnimation(google.maps.Animation.BOUNCE);
+              setTimeout(() => {
+                if (marker) marker.setAnimation(null);
+              }, 1500);
+            }
+
+            // Show success message with address
+            const addressComponents =
+              geocodeResult.results[0].formatted_address;
+            showMapHint(
+              `Found: ${addressComponents}. Tap marker for options.`,
+              5000
+            );
+          } else {
+            showMapHint(
+              "Location not found. Please try a more specific search.",
+              4000
+            );
+          }
+        } catch (error) {
+          console.error("Geocoding search error:", error);
+
+          if (error instanceof Error) {
+            if (error.message.includes("ZERO_RESULTS")) {
+              showMapHint(
+                "No locations found. Try a different search term.",
+                4000
+              );
+            } else {
+              showMapHint("Error finding location. Please try again.", 3000);
+            }
+          }
+        } finally {
+          isSearching = false;
+        }
       }
     } catch (error) {
-      console.error("Search error:", error);
-      showMapHint("Error searching for location.", 3000);
-    } finally {
+      console.error("Search initialization error:", error);
+      showMapHint("Search service unavailable. Please try again later.", 3000);
       isSearching = false;
     }
   }
@@ -358,44 +513,30 @@
         activeMapHint = "";
 
         // Show friendly error message to user
+        let errorMsg = "";
         if (error.code === 1) {
           // Permission denied
-          coordinatesError =
-            "Location permission denied. Please enable location services.";
-          showNotification(
-            "Location permission denied. Please enable location services in your browser settings.",
-            "error",
-            5000
-          );
+          errorMsg =
+            "Location permission denied. Please enable location services in your browser settings and allow this site.";
         } else if (error.code === 2) {
           // Position unavailable
-          coordinatesError =
-            "Unable to determine your location. Please try again or enter coordinates manually.";
-          showNotification(
-            "Unable to determine your location. Please try again or enter coordinates manually.",
-            "error"
-          );
+          errorMsg =
+            "Unable to determine your location currently. Please check your connection or try again later. You can also search or place a pin manually.";
         } else if (error.code === 3) {
           // Timeout
-          coordinatesError =
+          errorMsg =
             "Location request timed out. Please try again or enter coordinates manually.";
-          showNotification(
-            "Location request timed out. Please try again or enter coordinates manually.",
-            "error"
-          );
         } else {
-          coordinatesError =
-            "Error getting location. Please try again or enter coordinates manually.";
-          showNotification(
-            "Error getting your location. Please try again or enter coordinates manually.",
-            "error"
-          );
+          errorMsg =
+            "An unknown error occurred while getting your location. Please try again or enter coordinates manually.";
         }
+        coordinatesError = errorMsg;
+        showNotification(errorMsg, "error", 5000);
       },
       {
-        timeout: 10000,
-        enableHighAccuracy: true,
-        maximumAge: 0, // Don't use cached position
+        timeout: 15000, // Increased timeout
+        enableHighAccuracy: true, // Request high accuracy
+        maximumAge: 60000, // Allow slightly older cached positions (1 min) if needed
       }
     );
   }
@@ -403,43 +544,134 @@
   // Handle location changed from the map component (pin drag, click, etc.)
   function handleLocationChanged(event: CustomEvent) {
     const { lat, lng } = event.detail;
-    updateCoordinatesFromMap(lat, lng);
+    console.log("Marker location changed via drag:", lat, lng);
+
+    // Update coordinates without triggering immediate geocoding (which happens during drag)
+    updateCoordinatesFromMap(lat, lng, false);
+
+    // Only trigger geocoding when drag stops
+    if (geocodeTimer) {
+      clearTimeout(geocodeTimer);
+    }
+
+    // Set a timer to do geocoding after the dragging stops
+    geocodeTimer = setTimeout(() => {
+      if (geocoder && !isGeocodingAddress) {
+        reverseGeocode(lat, lng);
+      }
+    }, 500);
+
+    // Show confirmation
+    showMapHint("Position updated! Getting address...", 2000);
   }
 
   // Handle map click for pin mode
   function handleMapClick(event: CustomEvent) {
-    if (mapActionMode === "pin") {
-      const { lat, lng } = event.detail;
-      updateCoordinatesFromMap(lat, lng);
-      showMapHint("Pin placed! Coordinates updated.", 2000);
+    // Directly extract coordinates from the event
+    const { lat, lng } = event.detail;
+    console.log("Map clicked at:", lat, lng);
 
-      // Update the visual feedback
-      showNotification(
-        "Pin successfully placed at the selected location.",
-        "success"
-      );
+    // Update coordinate inputs and form data
+    // Note: Pass false to prevent endless address lookups while dragging
+    updateCoordinatesFromMap(lat, lng, true);
+
+    // Add visual indicator for the tap
+    try {
+      addTapRippleEffect(lat, lng);
+
+      // Clean up ripples after animation completes
+      setTimeout(() => {
+        if (mapElement) {
+          const ripples = mapElement.querySelectorAll(".map-tap-ripple");
+          ripples.forEach((ripple) => {
+            if (ripple.parentNode) {
+              ripple.parentNode.removeChild(ripple);
+            }
+          });
+        }
+      }, 700);
+    } catch (error) {
+      console.warn("Could not add ripple effect:", error);
+    }
+
+    // Show confirmation
+    showMapHint(
+      "Location set! You can drag the marker to adjust position.",
+      3000
+    );
+  }
+
+  // Helper function to add ripple effect
+  function addTapRippleEffect(lat: number, lng: number) {
+    if (!map || !mapElement) return;
+
+    const ripple = document.createElement("div");
+    ripple.className = "map-tap-ripple";
+    ripple.style.position = "absolute";
+    ripple.style.width = "20px";
+    ripple.style.height = "20px";
+    ripple.style.borderRadius = "50%";
+    ripple.style.backgroundColor = "rgba(255, 0, 0, 0.5)";
+    ripple.style.transform = "translate(-50%, -50%)";
+    ripple.style.animation = "ripple 0.6s ease-out";
+
+    try {
+      // Convert geo coordinates to pixel coordinates
+      const latLng = new google.maps.LatLng(lat, lng);
+      const projection = map.getProjection();
+
+      if (projection) {
+        const point = projection.fromLatLngToPoint(latLng);
+        if (point) {
+          const scale = Math.pow(2, map.getZoom() || 15);
+
+          const worldPoint = new google.maps.Point(
+            point.x * scale,
+            point.y * scale
+          );
+
+          // Position the ripple effect
+          ripple.style.left = `${worldPoint.x}px`;
+          ripple.style.top = `${worldPoint.y}px`;
+
+          // Add to map container
+          mapElement.appendChild(ripple);
+        }
+      }
+    } catch (error) {
+      console.warn("Error creating ripple effect:", error);
     }
   }
 
   // Centralized function to update coordinates from map interactions
-  function updateCoordinatesFromMap(lat: number, lng: number) {
+  function updateCoordinatesFromMap(
+    lat: number,
+    lng: number,
+    performGeocoding = true
+  ) {
     // Save to history for potential undo
     mapInteractionHistory.push({ lat, lng });
     mapInteractionHistory = mapInteractionHistory;
 
-    // Update center with the new coordinates
+    // Update center reactively
     center = [lat, lng];
 
-    // Update input fields
+    // Update input fields with precise values
     latInput = lat.toFixed(6);
     lngInput = lng.toFixed(6);
 
     // Update form value
     $customerInformationForm.mapAddress = `${lat},${lng}`;
 
-    // Try to get the address for these coordinates
-    if (geocoder) {
+    // Try to get the address for these coordinates, but only if requested
+    // This prevents continuous lookups when the user is interacting with the map
+    if (geocoder && performGeocoding && !isGeocodingAddress) {
       reverseGeocode(lat, lng);
+    }
+
+    // Center map on the new position if map exists
+    if (map) {
+      map.setCenter({ lat, lng });
     }
 
     // Indicate changes
@@ -450,62 +682,154 @@
     coordinatesError = "";
   }
 
+  // This function is now simplified as marker creation is handled by GoogleMaps component
+  function placeMarkerAtCurrentCoordinates() {
+    if (!map) return;
+
+    // Just center the map on the current coordinates
+    map.setCenter({ lat: center[0], lng: center[1] });
+
+    // Zoom in slightly for better precision
+    if (map && typeof map.getZoom === "function") {
+      const currentZoom = map.getZoom() || 0;
+      if (currentZoom < 15) {
+        map.setZoom(15);
+      }
+    }
+  }
+
   // Reverse geocode - convert coordinates to address
   async function reverseGeocode(lat: number, lng: number) {
-    if (!geocoder) return;
-
-    isGeocodingAddress = true;
-    addressFromCoordinates = "Getting address...";
+    if (!geocoder || isGeocodingAddress) return;
 
     try {
-      const response = await geocoder.geocode({
-        location: { lat, lng },
-      });
+      // Set loading state
+      isGeocodingAddress = true;
+      addressFromCoordinates = "Getting address...";
 
-      if (response.results && response.results.length > 0) {
-        addressFromCoordinates = response.results[0].formatted_address;
-
-        // If we're in edit mode and the user hasn't manually entered an address,
-        // we can suggest using this geocoded address
-        if (isEditMode && !$customerInformationForm.physicalAddress) {
-          $customerInformationForm.physicalAddress = addressFromCoordinates;
-        }
-      } else {
-        addressFromCoordinates = "No address found for this location";
+      // Debounce the geocoding request to prevent too many API calls
+      if (geocodeTimer) {
+        clearTimeout(geocodeTimer);
       }
+
+      // Use a local variable to ensure geocoder is available in the closure
+      const geocoderRef = geocoder;
+
+      geocodeTimer = setTimeout(async () => {
+        try {
+          // Make the geocoding request
+          const response = await geocoderRef.geocode({
+            location: { lat, lng },
+          });
+
+          // Process the results
+          if (response && response.results && response.results.length > 0) {
+            // Get the most complete address from the results
+            const result = response.results[0];
+
+            // Save the formatted address
+            addressFromCoordinates = result.formatted_address;
+
+            // Store components
+            if (isEditMode && !$customerInformationForm.physicalAddress) {
+              // If user hasn't manually set an address yet, suggest this one
+              $customerInformationForm.physicalAddress =
+                result.formatted_address;
+            }
+          } else {
+            addressFromCoordinates = "No address found for this location";
+          }
+        } catch (error) {
+          console.error("Geocoding error:", error);
+          addressFromCoordinates = "Could not determine address";
+        } finally {
+          isGeocodingAddress = false;
+        }
+      }, 500); // 500ms debounce
     } catch (error) {
-      console.error("Geocoding error:", error);
+      console.error("Error setting up geocoding:", error);
       addressFromCoordinates = "Could not determine address";
-    } finally {
       isGeocodingAddress = false;
     }
   }
 
-  // Handle map ready event to initialize services
+  // Initialize location and map-related services
+  function initializeMap(detail: any) {
+    console.log("Initializing map services...");
+
+    if (!detail?.google || !detail?.map) {
+      console.error("Failed to get Google Maps objects");
+      return;
+    }
+
+    const google = detail.google;
+    map = detail.map;
+
+    // Initialize geocoder
+    if (!geocoder) {
+      geocoder = new google.maps.Geocoder();
+      console.log("Geocoder initialized");
+    }
+
+    // Initialize PlacesService with a proper div element
+    if (!placesService) {
+      // Create a safe element for PlacesService that won't cause issues
+      const placesDiv = document.createElement("div");
+      placesDiv.style.display = "none";
+      if (mapElement) {
+        mapElement.appendChild(placesDiv);
+        try {
+          placesService = new google.maps.places.PlacesService(placesDiv);
+          console.log("Places service initialized");
+        } catch (e) {
+          console.warn("Could not initialize PlacesService:", e);
+        }
+      }
+    }
+
+    // If we already have coordinates, place a marker
+    if (center[0] && center[1]) {
+      // Create or update marker
+      placeMarkerAtCurrentCoordinates();
+
+      // Get address at these coordinates
+      if (geocoder) {
+        reverseGeocode(center[0], center[1]);
+      }
+    }
+  }
+
+  // Handle map ready event to initialize services and place initial marker
   function handleMapReady(event: CustomEvent) {
     mapStatus.isLoaded = true;
     isMapReady = true;
     mapStatus.lastUpdate = `Map loaded: ${new Date().toISOString()}`;
 
-    // Initialize geocoder if needed
-    if (event.detail?.google && !geocoder) {
-      const google = event.detail.google;
-      geocoder = new google.maps.Geocoder();
+    console.log(
+      "Map ready event received",
+      event.detail ? "with details" : "without details"
+    );
 
-      // Create a dummy div for PlacesService (required but not used directly)
-      if (!placesService && mapElement) {
-        placesService = new google.maps.places.PlacesService(
-          mapElement as HTMLElement
-        );
-      }
+    // Process map initialization with a small delay to ensure DOM is ready
+    setTimeout(() => {
+      initializeMap(event.detail);
+      showMapHint("Map is ready! Tap anywhere to set your location.", 4000);
+    }, 200);
+  }
 
-      // If we already have coordinates, let's get the address
-      if (center[0] && center[1]) {
-        reverseGeocode(center[0], center[1]);
-      }
-
-      showMapHint("Map is ready! You can now search or place pins.", 4000);
-    }
+  // Force reinitialize the map when entering location tab
+  $: if (
+    formSection === "location" &&
+    isLocationTabActive &&
+    map &&
+    !marker &&
+    center[0] &&
+    center[1]
+  ) {
+    console.log("Forcing marker placement on tab activation");
+    setTimeout(() => {
+      placeMarkerAtCurrentCoordinates();
+    }, 300);
   }
 
   // Handle map errors
@@ -915,6 +1239,37 @@
       }
     };
   };
+
+  // Handle marker click event
+  function handleMarkerClick(event: CustomEvent) {
+    const { lat, lng } = event.detail;
+    console.log("Marker clicked at:", lat, lng);
+
+    // If we have a valid address, show an option to use it
+    if (
+      addressFromCoordinates &&
+      addressFromCoordinates !== "Getting address..." &&
+      addressFromCoordinates !== "No address found for this location" &&
+      addressFromCoordinates !== "Could not determine address"
+    ) {
+      const confirmUse = confirm(
+        `Would you like to use this address?\n\n${addressFromCoordinates}`
+      );
+
+      if (confirmUse) {
+        $customerInformationForm.physicalAddress = addressFromCoordinates;
+        showNotification("Address saved to your profile", "success");
+      }
+    } else {
+      // If we don't have an address yet, tell the user we're working on it
+      showNotification("Getting address for this location...", "info");
+
+      // Ensure we're getting the address
+      if (geocoder && !isGeocodingAddress) {
+        reverseGeocode(lat, lng);
+      }
+    }
+  }
 </script>
 
 <div class="safe-area flex flex-col min-h-screen bg-gray-50">
@@ -1267,13 +1622,17 @@
               <label for="phoneNumber" class="form-label">Phone Number</label>
               <input
                 id="phoneNumber"
-                class="form-input"
+                class="form-input bg-gray-100 cursor-not-allowed"
                 type="tel"
                 name="phoneNumber"
                 placeholder="Enter your phone number"
                 bind:value={$customerInformationForm.phoneNumber}
-                {...$constraints.phoneNumber}
+                readonly
+                disabled
               />
+              <p class="text-xs text-gray-500 mt-1">
+                Phone number cannot be changed as it is used for login
+              </p>
               {#if $allErrors.find((err) => err.path === "phoneNumber")}
                 <p class="form-error">
                   {$allErrors.find((err) => err.path === "phoneNumber")
@@ -1390,44 +1749,41 @@
 
               <!-- Map interaction controls -->
               <div
-                class="flex items-center justify-between mb-2 bg-gray-50 rounded-lg p-2"
+                class="flex flex-col mb-3 bg-gray-50 rounded-lg p-3 border border-gray-200"
               >
-                <div class="flex space-x-2">
+                <p class="text-sm font-medium text-gray-700 mb-3">
+                  Set Your Location:
+                </p>
+
+                <!-- Primary location options -->
+                <div class="grid grid-cols-2 gap-3 mb-3">
                   <button
                     type="button"
-                    class={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1 ${mapActionMode === "browse" ? "bg-secondary text-white" : "bg-white text-gray-700 border border-gray-200"}`}
-                    on:click={() => setMapMode("browse")}
+                    class="py-3 px-4 bg-white border border-gray-200 rounded-lg flex flex-col items-center justify-center gap-1 hover:bg-gray-50 transition-colors"
+                    on:click={getUserLocation}
+                    disabled={isGettingLocation}
                   >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="h-3.5 w-3.5"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                    >
-                      <path
-                        fill-rule="evenodd"
-                        d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z"
-                        clip-rule="evenodd"
-                      />
-                    </svg>
-                    Browse
+                    {#if isGettingLocation}
+                      <Spinner class_="h-5 w-5 text-secondary" />
+                      <span class="text-sm font-medium text-gray-700"
+                        >Getting location...</span
+                      >
+                    {:else}
+                      <LocationIcon class_="h-5 w-5 text-secondary" />
+                      <span class="text-sm font-medium text-gray-700"
+                        >Use My Current Location</span
+                      >
+                    {/if}
                   </button>
+
                   <button
                     type="button"
-                    class={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1 ${mapActionMode === "pin" ? "bg-secondary text-white" : "bg-white text-gray-700 border border-gray-200"}`}
-                    on:click={() => setMapMode("pin")}
-                  >
-                    <LocationIcon class_="h-3.5 w-3.5" />
-                    Place Pin
-                  </button>
-                  <button
-                    type="button"
-                    class={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1 ${mapActionMode === "search" ? "bg-secondary text-white" : "bg-white text-gray-700 border border-gray-200"}`}
+                    class={`py-3 px-4 rounded-lg flex flex-col items-center justify-center gap-1 transition-colors ${mapActionMode === "search" ? "bg-secondary text-white border border-secondary" : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"}`}
                     on:click={() => setMapMode("search")}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-3.5 w-3.5"
+                      class="h-5 w-5"
                       viewBox="0 0 20 20"
                       fill="currentColor"
                     >
@@ -1437,73 +1793,77 @@
                         clip-rule="evenodd"
                       />
                     </svg>
-                    Search
+                    <span class="text-sm font-medium">Search For Location</span>
                   </button>
                 </div>
 
-                <div>
-                  <button
-                    type="button"
-                    class="px-2 py-1.5 rounded-md text-xs font-medium bg-white text-gray-700 border border-gray-200 flex items-center"
-                    on:click={undoLastMapAction}
-                    disabled={mapInteractionHistory.length <= 1}
-                    title="Undo last map change"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="h-3.5 w-3.5"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                    >
-                      <path
-                        fill-rule="evenodd"
-                        d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
-                        clip-rule="evenodd"
-                      />
-                    </svg>
-                    Undo
-                  </button>
+                <!-- Instruction text -->
+                <div
+                  class="text-xs text-center text-gray-500 border-t border-gray-200 pt-2"
+                >
+                  {#if mapActionMode === "search"}
+                    Enter a location name, landmark, or address to search
+                  {:else}
+                    <span class="flex items-center justify-center gap-1">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="h-3 w-3"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                      >
+                        <path
+                          fill-rule="evenodd"
+                          d="M6.672 1.911a1 1 0 10-1.932.518l.259.966a1 1 0 001.932-.518l-.26-.966zM2.429 4.74a1 1 0 10-.517 1.932l.966.259a1 1 0 00.517-1.932l-.966-.26zm8.814-.569a1 1 0 00-1.415-1.414l-.707.707a1 1 0 101.415 1.415l.707-.708zm-7.071 7.072l.707-.707A1 1 0 003.465 9.12l-.708.707a1 1 0 001.415 1.415zm3.2-5.171a1 1 0 00-1.3 1.3l4 10a1 1 0 001.823.075l1.38-2.759 3.018 3.02a1 1 0 001.414-1.415l-3.019-3.02 2.76-1.379a1 1 0 00-.076-1.822l-10-4z"
+                          clip-rule="evenodd"
+                        />
+                      </svg>
+                      <span
+                        >Tap anywhere on the map to set your location pin</span
+                      >
+                    </span>
+                  {/if}
                 </div>
               </div>
 
               <!-- Search input (conditionally shown) -->
               {#if mapActionMode === "search"}
                 <div
-                  class="mb-2"
+                  class="mb-3"
                   transition:scale={{ duration: 200, easing: quintOut }}
                 >
                   <div class="relative">
                     <input
                       type="text"
-                      placeholder="Search for a location..."
-                      class="form-input pr-10 pl-3"
+                      placeholder="Enter location or address..."
+                      class="form-input pr-10 pl-3 py-3"
                       bind:value={searchQuery}
+                      on:input={handleSearchInput}
                       on:keydown={(e) => e.key === "Enter" && searchPlaces()}
                     />
                     <button
                       type="button"
-                      class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-secondary"
+                      class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-secondary px-2 py-1"
                       on:click={searchPlaces}
                       disabled={isSearching || !searchQuery.trim()}
                     >
                       {#if isSearching}
                         <Spinner class_="h-5 w-5" />
                       {:else}
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          class="h-5 w-5"
-                          viewBox="0 0 20 20"
-                          fill="currentColor"
-                        >
-                          <path
-                            fill-rule="evenodd"
-                            d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"
-                            clip-rule="evenodd"
-                          />
-                        </svg>
+                        <span class="text-sm font-medium">Search</span>
                       {/if}
                     </button>
                   </div>
+                </div>
+
+                <!-- Search mode escape button -->
+                <div class="text-center mb-3">
+                  <button
+                    type="button"
+                    class="text-xs text-secondary"
+                    on:click={() => setMapMode("place")}
+                  >
+                    Cancel search and return to place mode
+                  </button>
                 </div>
               {/if}
 
@@ -1535,14 +1895,16 @@
                 bind:this={mapElement}
               >
                 <div id="map" class="h-full w-full">
-                  {#if formSection === "location"}
+                  {#if formSection === "location" && isLocationTabActive}
+                    <!-- Only render the map component when the location tab is active and ready -->
                     <GoogleMaps
                       lat={center[0]}
                       lng={center[1]}
-                      display={true}
+                      display={false}
                       showSearchBox={false}
                       on:locationChanged={handleLocationChanged}
                       on:mapClick={handleMapClick}
+                      on:markerClick={handleMarkerClick}
                       on:mapReady={handleMapReady}
                       on:error={handleMapError}
                       key={mapKey}
@@ -1550,30 +1912,57 @@
                   {/if}
                 </div>
 
-                <div class="absolute top-2 right-2 flex space-x-1">
+                <div class="absolute top-2 right-2">
                   <button
                     type="button"
-                    class="bg-white rounded-md shadow px-2 py-1.5 text-gray-700 text-xs z-10 flex items-center"
-                    on:click={getUserLocation}
-                    disabled={isGettingLocation}
-                  >
-                    {#if isGettingLocation}
-                      <Spinner class_="h-3 w-3 mr-1" />
-                      <span>Getting location...</span>
-                    {:else}
-                      <LocationIcon class_="h-3 w-3 mr-1" />
-                      <span>My location</span>
-                    {/if}
-                  </button>
-
-                  <button
-                    type="button"
-                    class="bg-white rounded-md shadow px-2 py-1.5 text-gray-700 text-xs z-10"
+                    class="bg-white rounded-md shadow px-3 py-1.5 text-gray-700 text-xs z-10 flex items-center gap-1"
                     on:click={toggleMapExpanded}
                   >
-                    {mapExpanded ? "Collapse" : "Expand"}
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d={mapExpanded
+                          ? "M20 12H4"
+                          : "M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"}
+                      />
+                    </svg>
+                    {mapExpanded ? "Collapse map" : "Expand map"}
                   </button>
                 </div>
+              </div>
+
+              <!-- Map action buttons row below map -->
+              <div class="flex justify-end mt-2 mb-3">
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 text-xs py-1.5 px-3 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium"
+                  on:click={undoLastMapAction}
+                  disabled={mapInteractionHistory.length <= 1}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M3 10h10a4 4 0 0 1 0 8H9m-6-8l3-3m0 0L3 4m3 3H3"
+                    />
+                  </svg>
+                  Undo Last Change
+                </button>
               </div>
 
               <!-- Coordinates input section - redesigned for clarity and better UX -->
@@ -1592,7 +1981,8 @@
                     <input
                       id="latitude"
                       class="form-input text-sm"
-                      type="text"
+                      type="number"
+                      step="any"
                       placeholder="e.g. 9.0046464"
                       bind:value={latInput}
                       on:input={handleCoordinateInput}
@@ -1614,7 +2004,8 @@
                     <input
                       id="longitude"
                       class="form-input text-sm"
-                      type="text"
+                      type="number"
+                      step="any"
                       placeholder="e.g. 38.797312"
                       bind:value={lngInput}
                       on:input={handleCoordinateInput}
@@ -1646,8 +2037,8 @@
                   </p>
                 {:else}
                   <p class="text-xs text-gray-500 mt-2 italic">
-                    You can update coordinates by typing values directly or by
-                    interacting with the map.
+                    Update coordinates by typing values, searching, placing a
+                    pin, or using your current location.
                   </p>
                 {/if}
               </div>
@@ -1655,7 +2046,6 @@
               {#if addressFromCoordinates}
                 <div
                   class="mt-3 bg-white rounded-lg border border-gray-200 overflow-hidden"
-                  transition:scale={{ duration: 200, easing: quintOut }}
                 >
                   <div
                     class="border-b border-gray-100 bg-gray-50 px-3 py-2 flex justify-between items-center"
@@ -1684,38 +2074,47 @@
                   </div>
 
                   <div class="p-3">
-                    <p class="text-sm text-gray-800">
-                      {addressFromCoordinates}
-                    </p>
+                    {#if addressFromCoordinates === "Getting address..."}
+                      <div class="flex items-center">
+                        <Spinner class_="h-3 w-3 mr-2" />
+                        <p class="text-sm text-gray-600">
+                          Looking up address...
+                        </p>
+                      </div>
+                    {:else}
+                      <p class="text-sm text-gray-800 mb-3">
+                        {addressFromCoordinates}
+                      </p>
 
-                    {#if isEditMode && addressFromCoordinates && addressFromCoordinates !== "Getting address..." && addressFromCoordinates !== "No address found for this location" && addressFromCoordinates !== "Could not determine address"}
-                      <button
-                        type="button"
-                        class="mt-2 px-3 py-1.5 bg-secondary/10 hover:bg-secondary/20 text-secondary text-xs rounded-md flex items-center transition-colors"
-                        on:click={() => {
-                          $customerInformationForm.physicalAddress =
-                            addressFromCoordinates;
-                          showNotification(
-                            "Address saved to your profile",
-                            "success"
-                          );
-                        }}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          class="h-3.5 w-3.5 mr-1.5"
-                          viewBox="0 0 20 20"
-                          fill="currentColor"
+                      {#if isEditMode && addressFromCoordinates && addressFromCoordinates !== "No address found for this location" && addressFromCoordinates !== "Could not determine address"}
+                        <button
+                          type="button"
+                          class="w-full py-2 bg-secondary text-white text-sm font-medium rounded-md flex items-center justify-center transition-colors"
+                          on:click={() => {
+                            $customerInformationForm.physicalAddress =
+                              addressFromCoordinates;
+                            showNotification(
+                              "Address saved to your profile",
+                              "success"
+                            );
+                          }}
                         >
-                          <path
-                            d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z"
-                          />
-                          <path
-                            d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z"
-                          />
-                        </svg>
-                        Use this as my address
-                      </button>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            class="h-4 w-4 mr-1.5"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path
+                              d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z"
+                            />
+                            <path
+                              d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z"
+                            />
+                          </svg>
+                          Use this address
+                        </button>
+                      {/if}
                     {/if}
                   </div>
                 </div>
@@ -1887,7 +2286,7 @@
                       lng={parseFloat(
                         data.session.customerData.mapAddress.split(",")[1]
                       )}
-                      display={true}
+                      display={false}
                       showSearchBox={false}
                       on:error={handleMapError}
                       key={0}
@@ -2020,5 +2419,27 @@
     border-radius: 0.5rem;
     font-weight: 500;
     font-size: 0.875rem;
+  }
+
+  /* Map tap animation */
+  @keyframes ripple {
+    0% {
+      transform: translate(-50%, -50%) scale(0.5);
+      opacity: 1;
+    }
+    70% {
+      transform: translate(-50%, -50%) scale(2.5);
+      opacity: 0.5;
+    }
+    100% {
+      transform: translate(-50%, -50%) scale(3);
+      opacity: 0;
+    }
+  }
+
+  /* For visible tap feedback */
+  .map-tap-ripple {
+    pointer-events: none;
+    z-index: 1000;
   }
 </style>

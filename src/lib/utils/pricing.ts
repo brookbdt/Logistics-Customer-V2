@@ -5,6 +5,7 @@
 
 // Define types for pricing configuration
 export interface PricingConfig {
+
     cities: string[];
     pricingMatrix: Record<string, Record<string, number>>;
     packagingFees: Record<string, number>;
@@ -44,6 +45,7 @@ export interface PriceBreakdown {
     orderTypeMultiplier: number;
     goodsTypeMultiplier: number;
     premiumTypeMultiplier: number;
+    vehicleTypeMultiplier: number;
     multipliedShippingCost: number;
     packagingCost: number;
     additionalFees: {
@@ -199,6 +201,7 @@ export function calculatePrice(
         let baseShippingCost = 0;
         let packagingCost = 0;
         let additionalFees: { name: string; amount: number }[] = [];
+        let vehicleTypeMultiplier = 1;
 
         // Normalize city names for consistent lookup
         const normalizedOriginCity = normalizeCity(params.originCity, pricingConfig.cities);
@@ -281,8 +284,8 @@ export function calculatePrice(
                         params.vehicleType.slice(1).toLowerCase();
 
                     const vehicleTypes = pricingConfig.vehicleTypes?.[normalizedOriginCity];
-                    const vehicleMultiplier = vehicleTypes?.[normalizedVehicleType] || 1;
-                    baseShippingCost *= vehicleMultiplier;
+                    vehicleTypeMultiplier = vehicleTypes?.[normalizedVehicleType] || 1;
+                    baseShippingCost *= vehicleTypeMultiplier;
                 }
             }
 
@@ -335,7 +338,8 @@ export function calculatePrice(
             subscriptionTypeMultiplier *
             orderTypeMultiplier *
             goodsTypeMultiplier *
-            premiumTypeMultiplier;
+            premiumTypeMultiplier *
+            vehicleTypeMultiplier;
 
         // Calculate total additional fees
         const totalAdditionalFees = additionalFees.reduce(
@@ -355,6 +359,7 @@ export function calculatePrice(
             orderTypeMultiplier,
             goodsTypeMultiplier,
             premiumTypeMultiplier,
+            vehicleTypeMultiplier,
             multipliedShippingCost,
             packagingCost,
             additionalFees,

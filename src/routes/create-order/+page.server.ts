@@ -2,15 +2,67 @@ import { prisma } from "$lib/utils/prisma";
 import { sendMail } from "$lib/utils/send-email.server";
 import type { GoodsType, Order_orderStatus, OrderType, PackageType, PackagingType, Vehicles_vehicleType } from "@prisma/client";
 import { fail, redirect } from "@sveltejs/kit";
+import { createOrderSchema } from "$lib/utils/schemas/create-order";
+import { superValidate } from "sveltekit-superforms/server";
+import { zod } from 'sveltekit-superforms/adapters';
+import { Prisma } from '@prisma/client';
 
-export const load = async (event) => {
 
+
+// Define the EnhancedSessionType for better type checking
+
+export const load = async ({ locals, url }) => {
+  const form = await superValidate(zod(createOrderSchema));
 
   const session =
-    (await event.locals.getSession()) as EnhancedSessionType | null;
+    (await locals.getSession()) as EnhancedSessionType | null;
 
   if (!session?.customerData.customerType) {
     throw redirect(302, "/customer-information");
+  }
+
+  // Handle customer search if query parameter is provided
+  const searchQuery = url.searchParams.get('searchCustomer');
+  let searchResults = null;
+
+  if (searchQuery && searchQuery.length >= 2) {
+    searchResults = await prisma.customer.findMany({
+      where: {
+        id: {
+          not: session.customerData.id,
+        },
+        OR: [
+          {
+            User: {
+              email: {
+                contains: searchQuery,
+              },
+              isEmployee: false,
+            },
+          },
+          {
+            User: {
+              phoneNumber: {
+                contains: searchQuery,
+              },
+              isEmployee: false,
+            },
+          },
+          {
+            User: {
+              userName: {
+                contains: searchQuery,
+              },
+              isEmployee: false,
+            },
+          },
+        ],
+      },
+      include: {
+        User: true,
+      },
+      take: 5, // Limit results
+    });
   }
 
   //   let subscriptionTypes = await prisma.subscriptionTypeMultiplier.findMany({
@@ -64,8 +116,10 @@ export const load = async (event) => {
   });
 
   return {
+    form,
     regions,
     customer,
+    customerSearchResults: searchResults,
 
     pricingConfig: {
       cities: [...new Set(cities.map(c => c.originCity))],
@@ -209,135 +263,228 @@ async function findOptimalWarehouseRoute(
   receiverLat: number,
   receiverLng: number,
   originCity: string,
-  destinationCity: string
+  destinationCity: string,
+  allWarehouses: any[]
 ) {
-  // Get all active warehouses
-  const allWarehouses = await prisma.warehouse.findMany({
-    where: {
-      warehouseStatus: "ACTIVE",
-      deletedAt: null
-    },
-    include: {
-      region: true // Include region data for city information
-    }
+  console.log("findOptimalWarehouseRoute called with:", {
+    senderLat, senderLng, receiverLat, receiverLng,
+    originCity, destinationCity
   });
+
+  // Check if we have any warehouses to work with
+  if (!allWarehouses || allWarehouses.length === 0) {
+    console.warn("No warehouses provided to findOptimalWarehouseRoute");
+    return [];
+  }
+
+  console.log(`Using ${allWarehouses.length} active warehouses`);
 
   // Process warehouses to include coordinates
   const warehousesWithCoords = allWarehouses.map(warehouse => {
     // Parse coordinates from the mapLocation string
-    const [lat, lng] = warehouse.mapLocation ?
-      warehouse.mapLocation.split(',').map(Number) :
-      [0, 0]; // Default to 0,0 if mapLocation is missing
+    let lat = 0;
+    let lng = 0;
+
+    try {
+      if (warehouse.mapLocation) {
+        const coords = warehouse.mapLocation.split(',');
+        if (coords.length === 2) {
+          lat = Number(coords[0].trim());
+          lng = Number(coords[1].trim());
+
+          // Validate coordinates
+          if (isNaN(lat) || isNaN(lng) ||
+            Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+            console.warn(`Invalid warehouse coordinates: ${warehouse.mapLocation}`);
+            lat = 0;
+            lng = 0;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error parsing coordinates for warehouse ${warehouse.id}:`, error);
+    }
 
     return {
       id: warehouse.id,
       name: warehouse.name,
       mapLocation: warehouse.mapLocation || "",
-      city: warehouse.region?.name || "", // Use region name as city
+      city: warehouse.region?.name || "Unknown",
       lat,
-      lng
+      lng,
+      // Pre-calculate distances to sender and receiver
+      distanceToSender: calculateDistance(senderLat, senderLng, lat, lng),
+      distanceToReceiver: calculateDistance(receiverLat, receiverLng, lat, lng)
     };
   });
 
-  // Filter warehouses by city
-  const originWarehouses = warehousesWithCoords.filter(w =>
-    w.city.toLowerCase() === originCity.toLowerCase()
+  // Filter out warehouses with invalid coordinates (0,0)
+  const validWarehouses = warehousesWithCoords.filter(w =>
+    !(w.lat === 0 && w.lng === 0)
   );
 
-  const destinationWarehouses = warehousesWithCoords.filter(w =>
-    w.city.toLowerCase() === destinationCity.toLowerCase()
+  if (validWarehouses.length === 0) {
+    console.warn("No warehouses with valid coordinates found");
+    return [];
+  }
+
+  console.log(`Found ${validWarehouses.length} warehouses with valid coordinates`);
+
+  // Calculate direct distance between sender and receiver
+  const directDistance = calculateDistance(senderLat, senderLng, receiverLat, receiverLng);
+  console.log(`Direct distance between sender and receiver: ${directDistance.toFixed(2)} km`);
+
+  // Always find the closest warehouse to sender
+  let senderWarehouse = validWarehouses[0];
+  let minDistanceToSender = senderWarehouse.distanceToSender;
+
+  for (const warehouse of validWarehouses) {
+    if (warehouse.distanceToSender < minDistanceToSender) {
+      minDistanceToSender = warehouse.distanceToSender;
+      senderWarehouse = warehouse;
+    }
+  }
+
+  console.log(`Closest warehouse to sender: ${senderWarehouse.name} (${senderWarehouse.distanceToSender.toFixed(2)} km)`);
+
+  // For short distances (< 20km), use the same warehouse for both sender and receiver
+  if (directDistance < 20) {
+    console.log("Short distance delivery - using same warehouse for sender and receiver");
+    return [senderWarehouse];
+  }
+
+  // For longer distances, find a separate warehouse for the receiver if possible
+
+  // First try to find a warehouse in the destination city
+  const destinationCityWarehouses = validWarehouses.filter(w =>
+    w.city.toLowerCase() === destinationCity.toLowerCase() &&
+    w.id !== senderWarehouse.id
   );
 
-  // For in-city deliveries (same origin and destination)
-  if (originCity.toLowerCase() === destinationCity.toLowerCase()) {
-    // Find the warehouse nearest to sender
-    let nearestToSender = null;
-    let shortestDistance = Infinity;
+  if (destinationCityWarehouses.length > 0) {
+    // Find the closest warehouse in the destination city
+    let receiverWarehouse = destinationCityWarehouses[0];
+    let minDistanceToReceiver = receiverWarehouse.distanceToReceiver;
 
-    for (const warehouse of originWarehouses) {
-      const distance = calculateDistance(senderLat, senderLng, warehouse.lat, warehouse.lng);
-      if (distance < shortestDistance) {
-        shortestDistance = distance;
-        nearestToSender = warehouse;
+    for (const warehouse of destinationCityWarehouses) {
+      if (warehouse.distanceToReceiver < minDistanceToReceiver) {
+        minDistanceToReceiver = warehouse.distanceToReceiver;
+        receiverWarehouse = warehouse;
       }
     }
 
-    return nearestToSender ? [nearestToSender] : [];
+    console.log(`Using warehouse in destination city for receiver: ${receiverWarehouse.name}`);
+    return [senderWarehouse, receiverWarehouse];
   }
 
-  // For between-cities deliveries
-  const routeWarehouses = [];
+  // If no warehouse in destination city, find the closest warehouse to receiver
+  let receiverWarehouse = validWarehouses[0];
+  let minDistanceToReceiver = receiverWarehouse.distanceToReceiver;
 
-  // Find nearest warehouse in origin city
-  let nearestOriginWarehouse = null;
-  let shortestOriginDistance = Infinity;
-
-  for (const warehouse of originWarehouses) {
-    const distance = calculateDistance(senderLat, senderLng, warehouse.lat, warehouse.lng);
-    if (distance < shortestOriginDistance) {
-      shortestOriginDistance = distance;
-      nearestOriginWarehouse = warehouse;
+  for (const warehouse of validWarehouses) {
+    if (warehouse.id !== senderWarehouse.id &&
+      warehouse.distanceToReceiver < minDistanceToReceiver) {
+      minDistanceToReceiver = warehouse.distanceToReceiver;
+      receiverWarehouse = warehouse;
     }
   }
 
-  if (nearestOriginWarehouse) {
-    routeWarehouses.push(nearestOriginWarehouse);
+  // If we found a different warehouse for receiver, use it
+  if (receiverWarehouse.id !== senderWarehouse.id) {
+    console.log(`Using different warehouse for receiver: ${receiverWarehouse.name}`);
+    return [senderWarehouse, receiverWarehouse];
   }
 
-  // Find nearest warehouse in destination city
-  let nearestDestWarehouse = null;
-  let shortestDestDistance = Infinity;
-
-  for (const warehouse of destinationWarehouses) {
-    const distance = calculateDistance(receiverLat, receiverLng, warehouse.lat, warehouse.lng);
-    if (distance < shortestDestDistance) {
-      shortestDestDistance = distance;
-      nearestDestWarehouse = warehouse;
-    }
-  }
-
-  if (nearestDestWarehouse) {
-    routeWarehouses.push(nearestDestWarehouse);
-  }
-
-  return routeWarehouses;
+  // Otherwise, just use the sender warehouse for both
+  console.log("Using same warehouse for both sender and receiver");
+  return [senderWarehouse];
 }
 
-// Helper function to find the nearest warehouse
+// Helper function to find the nearest warehouse - improved version
 function findNearestWarehouse(
-  warehouses: Array<{ id: number; name: string; lat: number; lng: number; city: string }>,
+  warehouses: Array<{ id: number; name: string; lat: number; lng: number; city: string; mapLocation?: string }>,
   lat: number,
   lng: number,
   city?: string
 ) {
-  if (warehouses.length === 0) {
+  console.log("findNearestWarehouse called with:", {
+    lat, lng, city,
+    warehousesCount: warehouses?.length || 0
+  });
+
+  // Validate input
+  if (!warehouses || warehouses.length === 0) {
+    console.warn("No warehouses provided to findNearestWarehouse");
     return null;
   }
 
-  // Filter by city if provided
-  const filteredWarehouses = city
-    ? warehouses.filter(w => w.city.toLowerCase() === city.toLowerCase())
-    : warehouses;
+  if (isNaN(lat) || isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    console.warn(`Invalid coordinates provided to findNearestWarehouse: (${lat}, ${lng})`);
+    lat = 0;
+    lng = 0;
+  }
 
-  if (filteredWarehouses.length === 0) {
+  // Filter to warehouses with valid coordinates
+  const validWarehouses = warehouses.filter(w => {
+    return (w && w.lat !== undefined && w.lng !== undefined &&
+      !isNaN(w.lat) && !isNaN(w.lng) &&
+      !(w.lat === 0 && w.lng === 0));
+  });
+
+  if (validWarehouses.length === 0) {
+    console.warn("No warehouses with valid coordinates found");
     return null;
   }
 
   // Calculate distances to all warehouses
-  const warehousesWithDistances = filteredWarehouses.map(warehouse => {
-    const distance = calculateDistance(lat, lng, warehouse.lat, warehouse.lng);
-    return {
-      ...warehouse,
-      distance,
-      mapLocation: `${warehouse.lat},${warehouse.lng}` // Add mapLocation property
-    };
+  const warehousesWithDistances = validWarehouses.map(warehouse => {
+    try {
+      const distance = calculateDistance(lat, lng, warehouse.lat, warehouse.lng);
+      return {
+        ...warehouse,
+        distance,
+        mapLocation: warehouse.mapLocation || `${warehouse.lat},${warehouse.lng}`
+      };
+    } catch (error) {
+      console.error(`Error calculating distance to warehouse ${warehouse.id}:`, error);
+      return {
+        ...warehouse,
+        distance: Infinity,
+        mapLocation: warehouse.mapLocation || `${warehouse.lat},${warehouse.lng}`
+      };
+    }
   });
 
-  // Sort by distance and return the nearest
+  // Sort by distance
   warehousesWithDistances.sort((a, b) => a.distance - b.distance);
 
+  console.log("Top 3 closest warehouses:",
+    warehousesWithDistances.slice(0, 3).map(w => ({
+      id: w.id,
+      name: w.name,
+      city: w.city,
+      distance: w.distance.toFixed(2)
+    }))
+  );
+
+  // If city is provided, check if any of the top 3 closest warehouses match it
+  if (city) {
+    console.log(`Looking for warehouses in city: ${city}`);
+    const closestWithMatchingCity = warehousesWithDistances
+      .slice(0, 3)
+      .find(w => w.city?.toLowerCase() === city.toLowerCase());
+
+    if (closestWithMatchingCity) {
+      console.log("Found warehouse with matching city among closest 3:", closestWithMatchingCity);
+      return closestWithMatchingCity;
+    }
+  }
+
+  // If no city match was found or city wasn't provided, just return the closest
+  console.log("Using nearest warehouse:", warehousesWithDistances[0]);
   return warehousesWithDistances[0];
 }
+
 // Helper function to find intermediate warehouses for long routes
 function findIntermediateWarehouses(
   allWarehouses: Array<{ id: number; name: string; lat: number; lng: number; city: string }>,
@@ -601,486 +748,659 @@ async function getPricingConfig() {
     additionalFees: formattedAdditionalFees
   };
 }
+
+// Update the geocoding function to accept warehouses as a parameter
+async function geocodeCityFromCoordinates(
+  lat: number,
+  lng: number,
+  warehouses?: any[]
+): Promise<string | null> {
+  try {
+    let warehousesToUse = warehouses;
+
+    // If warehouses weren't passed in, fetch them
+    if (!warehousesToUse) {
+      warehousesToUse = await prisma.warehouse.findMany({
+        where: {
+          warehouseStatus: "ACTIVE",
+          deletedAt: null
+        },
+        include: {
+          region: true
+        }
+      });
+    }
+
+    if (!warehousesToUse || warehousesToUse.length === 0) {
+      console.warn("No warehouses found for geocoding");
+      return null;
+    }
+
+    // Find closest warehouse by coordinates, not by city name
+    const warehousesWithCoords = warehousesToUse.map(warehouse => {
+      const [warehouseLat, warehouseLng] = warehouse.mapLocation ?
+        warehouse.mapLocation.split(',').map(Number) :
+        [0, 0];
+
+      const distance = calculateDistance(lat, lng, warehouseLat, warehouseLng);
+
+      return {
+        city: warehouse.region?.name || "Unknown",
+        lat: warehouseLat,
+        lng: warehouseLng,
+        distance
+      };
+    });
+
+    // Sort by distance
+    warehousesWithCoords.sort((a, b) => a.distance - b.distance);
+
+    const closestWarehouse = warehousesWithCoords[0];
+    console.log(`Geocoded (${lat}, ${lng}) to city: ${closestWarehouse.city} (distance: ${closestWarehouse.distance.toFixed(2)} km)`);
+
+    return closestWarehouse.city;
+  } catch (error) {
+    console.error("Error geocoding coordinates to city:", error);
+    return null;
+  }
+}
+
 export const actions = {
   createOrder: async ({ request, locals }) => {
-    const session = await locals.getSession() as EnhancedSessionType;
+    console.log("Starting createOrder action");
+    const session = (await locals.getSession()) as EnhancedSessionType || null;
     if (!session) {
+      console.log("No session found, returning error");
       return fail(400, { errorMessage: "You must be logged in to create an order" });
     }
 
-    const formData = await request.formData();
+    // Validate form data using superValidate
+    const form = await superValidate(request, zod(createOrderSchema));
 
-    // Extract sender information
-    const userName = formData.get("userName") as string;
-    const phoneNumber = formData.get("phoneNumber") as string;
-    const pickUpTime = formData.get("pickUpTime") as string;
-    const pickUpLocation = formData.get("pickUpLocation") as string;
-    const mapAddress = formData.get("mapAddress") as string;
-
-    // Extract receiver information
-    const receiverUsername = formData.get("receiverUsername") as string;
-    const receiverPhoneNumber = formData.get("receiverPhoneNumber") as string;
-    const receiverEmail = formData.get("receiverEmail") as string;
-    const inCity = formData.get("inCity") as string;
-    const dropOffTime = formData.get("dropOffTime") as string;
-    const dropOffLocation = formData.get("dropOffLocation") as string;
-    const dropOffMapAddress = formData.get("dropOffMapAddress") as string;
-    const receiverId = formData.get("receiverId") as string;
-
-    // Extract package and pricing information - fix the type casting
-    const packageType = formData.get("packageType") as string;
-    const orderType = formData.get("orderType") as string;
-    const goodsType = formData.get("goodsType") as string;
-    const packagingType = formData.get("packagingType") as string;
-    const vehicleTypeInput = formData.get("vehicleType") as string;
-
-    // Get payment option
-    const paymentOption = formData.get("paymentOption") as "pay_now" | "pay_on_acceptance" | "pay_on_delivery" || "pay_on_acceptance";
-
-    // Extract weight and dimensions
-    const actualWeight = parseFloat(formData.get("actualWeight") as string) || 0.5;
-    const length = parseFloat(formData.get("length") as string) || 0;
-    const width = parseFloat(formData.get("width") as string) || 0;
-    const height = parseFloat(formData.get("height") as string) || 0;
-
-    // Validate required fields
-    if (
-      typeof pickUpTime !== "string" ||
-      typeof pickUpLocation !== "string" ||
-      !mapAddress ||
-      typeof mapAddress !== "string" ||
-      typeof dropOffTime !== "string" ||
-      typeof dropOffLocation !== "string" ||
-      typeof inCity !== "string" ||
-      typeof receiverPhoneNumber !== "string" ||
-      typeof receiverUsername !== "string" ||
-      typeof packageType !== "string" ||
-      typeof dropOffMapAddress !== "string" ||
-      typeof receiverEmail !== "string"
-    ) {
-      return fail(400, { errorMessage: "Invalid data" });
+    // Check if form is valid
+    if (!form.valid) {
+      console.log("Form validation failed", form.errors);
+      return fail(400, { form, errorMessage: "Invalid form data" });
     }
 
-    // Calculate dimensional weight if dimensions are provided
-    let dimensionalWeight = 0;
-    if (length > 0 && width > 0 && height > 0) {
-      dimensionalWeight = (length * width * height) / 5000;
-    }
+    console.log("Form is valid, proceeding with order creation");
+    const formData = form.data;
 
-    // Use the higher of actual weight or dimensional weight as VWF
-    const effectiveWeight = Math.max(actualWeight, dimensionalWeight);
+    // Extract price breakdown data directly from form
+    const priceBreakdown = formData.priceBreakdown || {};
 
-    // Extract city information
-    const originCity = formData.get("originCity") as string || "Addis Ababa";
-    const destinationCity = formData.get("destinationCity") as string || "Addis Ababa";
+    // Log key form data for debugging
+    console.log("Order data summary:", {
+      packageType: formData.packageType,
+      pickUpLocation: formData.pickUpLocation,
+      dropOffLocation: formData.dropOffLocation,
+      mapAddress: formData.mapAddress,
+      dropOffMapAddress: formData.dropOffMapAddress,
+      totalCost: formData.totalCost
+    });
 
-    // Extract distance and time information (for in-city deliveries)
-    const distanceInKm = parseFloat(formData.get("distanceInKm") as string) || 0;
-    const estimatedTimeInMinutes = parseInt(formData.get("estimatedTimeInMinutes") as string) || 0;
+    // Extract all necessary data from form
+    const {
+      userName,
+      phoneNumber,
+      pickUpTime,
+      pickUpLocation,
+      mapAddress,
+      receiverUsername,
+      receiverPhoneNumber,
+      receiverEmail,
+      inCity,
+      dropOffLocation,
+      dropOffMapAddress,
+      receiverId,
+      packageType,
+      orderType,
+      goodsType,
+      packagingType,
+      vehicleType: vehicleTypeInput,
+      paymentOption,
+      actualWeight = 0.5,
+      originCity: formOriginCity = "Addis Ababa",
+      destinationCity: formDestinationCity = "Addis Ababa",
+      distanceInKm = 0,
+      estimatedTimeInMinutes = 0,
+      totalCost
+    } = formData;
+
+    // Create variables that can be updated by geocoding
+    let originCity = formOriginCity;
+    let destinationCity = formDestinationCity;
 
     try {
-      // Get pricing configuration
-      const pricingConfig = await getPricingConfig();
+      console.log("Starting transaction for order creation");
+      // Store email data outside the transaction
+      let emailData: {
+        orderForEmails: any;
+        receiverEmail: string | null;
+        userName: string;
+        phoneNumber: string;
+        pickUpPhysicalLocation: string;
+        dropOffPhysicalLocation: string;
+        senderEmail: string | null;
+        packageType: string;
+        pickUpLocation: string;
+        dropOffLocation: string;
+        totalCost: number;
+      } | null = null;
 
-      // --- CALCULATE PRICE USING THE EXACT FORMULA ---
+      // Execute all database operations in a transaction
+      const result = await prisma.$transaction(async (tx) => {
+        console.log("Inside transaction");
+        // --- VALIDATE COORDINATES ---
+        let senderCoords: number[];
+        let receiverCoords: number[];
 
-      // 1. Determine Customer Type Coefficient (CTC)
-      const customerType = session?.customerData?.customerType || "INDIVIDUAL";
-      const customerTypeMultiplier = pricingConfig.customerTypeMultipliers[customerType] || 1;
+        try {
+          // Parse and validate sender coordinates
+          senderCoords = mapAddress.split(',').map(coord => {
+            const num = Number(coord.trim());
+            if (isNaN(num)) throw new Error(`Invalid sender coordinate: ${coord}`);
+            return num;
+          });
 
-      // 2. Determine Subscription Type Coefficient (STC)
-      // Always 1 since the user is logged in (registered)
-      const subscriptionTypeMultiplier = 1;
+          // Parse and validate receiver coordinates
+          receiverCoords = dropOffMapAddress.split(',').map(coord => {
+            const num = Number(coord.trim());
+            if (isNaN(num)) throw new Error(`Invalid receiver coordinate: ${coord}`);
+            return num;
+          });
 
-      // 3. Determine Order Type Coefficient (OTC)
-      const orderTypeMultiplier = pricingConfig.orderTypeMultipliers[orderType] || 1;
+          if (senderCoords.length !== 2) {
+            throw new Error(`Expected 2 sender coordinates, got ${senderCoords.length}`);
+          }
 
-      // 4. Determine Type of Goods Coefficient (TGC)
-      const goodsTypeMultiplier = pricingConfig.goodsTypeMultipliers[goodsType] || 1;
+          if (receiverCoords.length !== 2) {
+            throw new Error(`Expected 2 receiver coordinates, got ${receiverCoords.length}`);
+          }
 
-      // 5. Determine if user has premium status
-      const isPremium = !!session?.customerData?.premium;
-      const premiumTypeMultiplier = isPremium
-        ? (pricingConfig.premiumTypeMultipliers["PREMIUM"] || 1)
-        : 1;
+          // Validate coordinate ranges
+          const [senderLat, senderLng] = senderCoords;
+          const [receiverLat, receiverLng] = receiverCoords;
 
-      let baseShippingCost = 0;
-      let packagingCost = 0;
-      let additionalFees = [];
-      let vehicleMultiplier = 1;
-      let peakHourMultiplier = 1;
+          if (Math.abs(senderLat) > 90 || Math.abs(senderLng) > 180) {
+            throw new Error(`Invalid sender coordinates: [${senderLat}, ${senderLng}]`);
+          }
 
-      // 6. Calculate base shipping cost differently based on delivery type
-      if (inCity === "0") {
-        // --- IN-CITY DELIVERY ---
-
-        // Get the city pricing data or default to Addis Ababa
-        const cityPricing = pricingConfig.inCityPricing[originCity] || pricingConfig.inCityPricing["Addis Ababa"];
-
-        if (!cityPricing) {
-          throw new Error(`No pricing data available for city: ${originCity}`);
+          if (Math.abs(receiverLat) > 90 || Math.abs(receiverLng) > 180) {
+            throw new Error(`Invalid receiver coordinates: [${receiverLat}, ${receiverLng}]`);
+          }
+        } catch (error) {
+          console.error("Coordinate validation error:", error);
+          return fail(400, { form, errorMessage: `Coordinate validation error: ${(error as Error).message}` });
         }
 
-        // Base rate (starting fee)
-        baseShippingCost = cityPricing.baseRate || 0;
-
-        // Add distance-based cost
-        baseShippingCost += distanceInKm * (cityPricing.perKmRate || 0);
-
-        // Add time-based cost
-        baseShippingCost += estimatedTimeInMinutes * (cityPricing.perMinuteRate || 0);
-
-        // Apply vehicle type multiplier if specified
-        if (vehicleTypeInput && pricingConfig.vehicleTypes[originCity]) {
-          vehicleMultiplier = pricingConfig.vehicleTypes[originCity][vehicleTypeInput] || 1;
-        }
-
-        // Check if it's peak hour and apply multiplier
-        const currentHour = new Date().getHours();
-        if (currentHour >= 17 && currentHour <= 19 && cityPricing.peakHourMultiplier) {
-          peakHourMultiplier = cityPricing.peakHourMultiplier;
-        }
-
-        // Apply vehicle and peak hour multipliers
-        baseShippingCost *= vehicleMultiplier * peakHourMultiplier;
-
-        // Get any additional fees for this city
-        additionalFees = pricingConfig.additionalFees[originCity] || [];
-      } else {
-        // --- BETWEEN-CITIES DELIVERY ---
-
-        // Get the unit rate from the pricing matrix
-        const unitRate = pricingConfig.pricingMatrix[originCity]?.[destinationCity];
-
-        if (!unitRate) {
-          throw new Error(`No pricing data available for route from ${originCity} to ${destinationCity}`);
-        }
-
-        // Apply the formula: UR * VWF
-        baseShippingCost = unitRate * effectiveWeight;
-      }
-
-      // 7. Apply all multipliers to base shipping cost
-      // Formula: Shipping Cost = CTC * STC * TGC * OTC * UR * VWF
-      const multipliedShippingCost = baseShippingCost *
-        customerTypeMultiplier *
-        subscriptionTypeMultiplier *
-        orderTypeMultiplier *
-        goodsTypeMultiplier *
-        premiumTypeMultiplier;
-
-      // 8. Determine packaging cost based on packaging type
-      if (packagingType) {
-        packagingCost = pricingConfig.packagingFees[packagingType] || 0;
-      }
-
-      // 9. Calculate total additional fees
-      const totalAdditionalFees = additionalFees.reduce((sum, fee) => sum + fee.amount, 0);
-
-      // 10. Calculate total cost
-      // Formula: Total Price = Shipping Cost + Packaging Cost + Additional Fees
-      const totalCost = multipliedShippingCost + packagingCost + totalAdditionalFees;
-
-      // --- FIND WAREHOUSE ROUTE ---
-      const senderCoords = mapAddress.split(',').map(Number);
-      const receiverCoords = dropOffMapAddress.split(',').map(Number);
-
-      // Get all warehouses
-      const warehouses = await prisma.warehouse.findMany({
-        where: {
-          warehouseStatus: "ACTIVE",
-        },
-        include: {
-          region: true,
-        },
-      });
-
-      // Use turf.js for finding nearest warehouses
-      const turf = await import('@turf/turf');
-      const senderPoint = turf.point([senderCoords[1], senderCoords[0]]);
-      const receiverPoint = turf.point([receiverCoords[1], receiverCoords[0]]);
-
-      const warehousePoints = turf.featureCollection(
-        warehouses.map(warehouse => {
-          const warehouseLocation = warehouse.mapLocation.split(",");
-          return turf.point([
-            Number(warehouseLocation[1]),
-            Number(warehouseLocation[0])
-          ]);
-        })
-      );
-
-      const nearestToSender = turf.nearestPoint(senderPoint, warehousePoints);
-      const nearestToReceiver = turf.nearestPoint(receiverPoint, warehousePoints);
-
-      const nearToSenderWarehouse = warehouses.find((w) => {
-        const [wLat, wLng] = w.mapLocation.split(",").map(Number);
-        // turf returns [lng, lat] but our DB has [lat, lng]
-        return wLat === nearestToSender.geometry.coordinates[1] &&
-          wLng === nearestToSender.geometry.coordinates[0];
-      });
-
-      const nearToReceiverWarehouse = warehouses.find((w) => {
-        const [wLat, wLng] = w.mapLocation.split(",").map(Number);
-        // turf returns [lng, lat] but our DB has [lat, lng]
-        return wLat === nearestToReceiver.geometry.coordinates[1] &&
-          wLng === nearestToReceiver.geometry.coordinates[0];
-      });
-
-
-      // Create order milestones
-      let orderMilestones = [];
-      const isInCity = inCity === "0";
-
-      if (isInCity) {
-        // In-city delivery milestones
-        orderMilestones = [
-          {
-            description: `Pick up from Sender - ${pickUpLocation}`,
-            coordinates: mapAddress,
-            warehouseId: nearToSenderWarehouse?.id,
-
-          },
-          {
-            description: `Take to drop off - ${dropOffLocation}`,
-            coordinates: dropOffMapAddress,
-            warehouseId: nearToSenderWarehouse?.id,
-          },
-          {
-            description: "Deliver Item",
-            warehouseId: nearToSenderWarehouse?.id,
-
-          },
-
-        ];
-      } else {
-        // Between-cities delivery milestones
-        orderMilestones = [
-          {
-            description: `Pick up from Sender - ${pickUpLocation}`,
-            coordinates: mapAddress,
-            warehouseId: nearToSenderWarehouse?.id,
-
-          },
-          {
-            description: "Take to " + nearToSenderWarehouse?.name + " warehouse",
-            coordinates: nearToSenderWarehouse?.mapLocation,
-            warehouseId: nearToSenderWarehouse?.id,
-          },
-          {
-            description:
-              "Take from " +
-              nearToSenderWarehouse?.name +
-              " to " +
-              nearToReceiverWarehouse?.name +
-              " warehouse",
-            coordinates: nearToReceiverWarehouse?.mapLocation,
-            warehouseId: nearToReceiverWarehouse?.id,
-          },
-          {
-            description: `Take to drop off - ${dropOffLocation}`,
-            coordinates: dropOffMapAddress,
-            warehouseId: nearToReceiverWarehouse?.id,
-          },
-          { description: "Deliver Item", warehouseId: nearToReceiverWarehouse?.id },
-        ];
-      }
-
-      // Convert vehicle type enum if needed
-      let vehicleType = null;
-      if (vehicleTypeInput && inCity === "0") {
-        // Convert to Vehicles_vehicleType enum if it matches
-        if (['BIKE', 'CAR', 'TRUCK'].includes(vehicleTypeInput)) {
-          vehicleType = vehicleTypeInput as Vehicles_vehicleType;
-        }
-      }
-
-      // --- CREATE ORDER ---
-      const orderData = {
-        senderCustomerId: Number(session?.customerData.id),
-        dropOffPhysicalLocation: dropOffLocation,
-        dropOffMapLocation: dropOffMapAddress,
-        orderStatus: "UNCLAIMED" as Order_orderStatus,
-        packageType: packageType as PackageType,
-        paymentStatus: false,
-        paymentOption: paymentOption,
-        pickUpMapLocation: mapAddress,
-        pickUpPhysicalLocation: pickUpLocation,
-        dropOffTime: new Date(dropOffTime),
-        pickUpTime: new Date(pickUpTime),
-        receiverCustomerId: receiverId ? Number(receiverId) : null,
-        receiverEmail: receiverEmail ?? null,
-        receiverPhoneNumber: receiverPhoneNumber ?? null,
-        receiverName: receiverUsername ?? null,
-        isInCity: inCity === "0",
-        // lastMile: inCity === "0" ? true : false,
-
-        // Pricing calculation details
-        baseShippingCost,
-        customerTypeMultiplier: parseFloat(customerTypeMultiplier.toString()),
-        subscriptionTypeMultiplier,
-        orderTypeMultiplier,
-        goodsTypeMultiplier,
-        premiumTypeMultiplier,
-        vehicleMultiplier,
-        peakHourMultiplier,
-        multipliedShippingCost,
-        packagingCost,
-        totalAdditionalFees,
-        totalCost,
-
-        // Weight and dimensions
-        actualWeight,
-        dimensionalWeight: dimensionalWeight > 0 ? dimensionalWeight : null,
-        effectiveWeight,
-
-        // Distance and time
-        distanceInKm: distanceInKm > 0 ? distanceInKm : null,
-        estimatedTimeInMinutes: estimatedTimeInMinutes > 0 ? estimatedTimeInMinutes : null,
-
-        // Cities and characteristics
-        originCity,
-        destinationCity,
-        orderType: orderType as OrderType,
-        goodsType: goodsType as GoodsType,
-        packagingType: packagingType as PackagingType,
-        vehicleType,
-
-        // Milestones
-        orderMilestone: {
-          createMany: {
-            data: orderMilestones.map(milestone => ({
-              description: milestone.description,
-              coordinates: milestone.coordinates || null,
-              warehouseId: milestone.warehouseId === -1 ? null : milestone.warehouseId || null,
-            })),
-          },
-        },
-      };
-
-      console.log('Order Creation Data with Types:');
-      Object.entries(orderData).forEach(([key, value]) => {
-        console.log(`${key}:`, {
-          value,
-          type: value === null ? 'null' : typeof value,
-          isArray: Array.isArray(value),
-          isDate: value instanceof Date
-        });
-      });
-
-      // Also log the raw milestones data
-      console.log('\nOrder Milestones Data:');
-      console.log(JSON.stringify(orderMilestones, null, 2));
-
-      // Create the order with the logged data
-      const newOrder = await prisma.order.create({
-        data: orderData
-      });
-
-
-      // --- SEND EMAIL NOTIFICATIONS ---
-
-      // 1. Send email to receiver
-      if (!newOrder.receiverCustomerId) {
-        // For non-registered receivers, send directly to their provided email
-        const emailSentToReceiver = await sendMail(
-          newOrder.receiverEmail ?? "",
-          "Order coming to you has been created.",
-          `An order with id ${newOrder.id} from ${session?.userData.userName}, (${newOrder.receiverPhoneNumber}) is coming to ${newOrder.dropOffPhysicalLocation} from ${newOrder.pickUpPhysicalLocation}`
-        );
-        console.log(`Email notification sent to receiver: ${newOrder.receiverEmail}`);
-      } else {
-        // For registered receivers, look up their email
-        const user = await prisma.customer.findFirst({
+        // --- FIND WAREHOUSES ---
+        console.log("Finding warehouses");
+        // Get all active warehouses ONCE
+        const warehouses = await tx.warehouse.findMany({
           where: {
-            id: newOrder.receiverCustomerId,
+            warehouseStatus: "ACTIVE",
+            deletedAt: null
           },
           include: {
-            User: true,
+            region: true,
           },
         });
 
-        if (user?.User.email) {
-          const emailSentToReceiver = await sendMail(
-            user.User.email,
-            "Order coming to you has been created.",
-            `An order with id ${newOrder.id} from ${session?.userData.userName}, (${newOrder.receiverPhoneNumber}) is coming to ${newOrder.dropOffPhysicalLocation} from ${newOrder.pickUpPhysicalLocation}`
-          );
-          console.log(`Email notification sent to registered receiver: ${user.User.email}`);
+        if (warehouses.length === 0) {
+          console.error("No active warehouses found");
+          return fail(500, { form, errorMessage: "No active warehouses found in the system" });
+        }
+
+        console.log(`Found ${warehouses.length} active warehouses`);
+
+        // --- GEOCODE CITIES FROM COORDINATES ---
+        console.log("Geocoding origin and destination cities from coordinates");
+        try {
+          const geocodedOriginCity = await geocodeCityFromCoordinates(senderCoords[0], senderCoords[1], warehouses);
+          const geocodedDestinationCity = await geocodeCityFromCoordinates(receiverCoords[0], receiverCoords[1], warehouses);
+
+          console.log(`Geocoded origin city: ${geocodedOriginCity || "Not found"}`);
+          console.log(`Geocoded destination city: ${geocodedDestinationCity || "Not found"}`);
+
+          // Use geocoded cities if available, otherwise fall back to form data
+          if (geocodedOriginCity) {
+            originCity = geocodedOriginCity;
+          }
+
+          if (geocodedDestinationCity) {
+            destinationCity = geocodedDestinationCity;
+          }
+        } catch (error) {
+          console.error("Error during geocoding:", error);
+          // Continue with the original city names from the form
+        }
+
+        // --- FIND OPTIMAL WAREHOUSE ROUTE ---
+        console.log(`Finding optimal route using cities: origin=${originCity}, destination=${destinationCity}`);
+        const optimalWarehouses = await findOptimalWarehouseRoute(
+          senderCoords[0],
+          senderCoords[1],
+          receiverCoords[0],
+          receiverCoords[1],
+          originCity,
+          destinationCity,
+          warehouses // Pass warehouses to the function
+        );
+
+        console.log("Optimal warehouses:", optimalWarehouses);
+
+        // Initialize warehouse variables
+        let nearToSenderWarehouse = null;
+        let nearToReceiverWarehouse = null;
+
+        // Check if we found any warehouses
+        if (optimalWarehouses && optimalWarehouses.length > 0) {
+          console.log("Using warehouses from optimal route finder");
+          nearToSenderWarehouse = optimalWarehouses[0];
+
+          if (optimalWarehouses.length > 1) {
+            nearToReceiverWarehouse = optimalWarehouses[1];
+          } else {
+            // If only one warehouse was found, use it for both
+            nearToReceiverWarehouse = optimalWarehouses[0];
+          }
+        } else {
+          console.warn("Optimal route finding failed, using fallback method");
+
+          // FALLBACK: Use the first warehouse as sender warehouse
+          if (warehouses.length > 0) {
+            const firstWarehouse = warehouses[0];
+            console.log(`Using first warehouse as fallback: ${firstWarehouse.name} (ID: ${firstWarehouse.id})`);
+
+            // Create a warehouse object with all needed properties
+            nearToSenderWarehouse = {
+              id: firstWarehouse.id,
+              name: firstWarehouse.name,
+              mapLocation: firstWarehouse.mapLocation || "",
+              city: firstWarehouse.region?.name || "Unknown"
+            };
+
+            // Use the same warehouse for receiver
+            nearToReceiverWarehouse = nearToSenderWarehouse;
+          } else {
+            console.error("Critical error: No warehouses available");
+            return fail(500, { form, errorMessage: "No warehouses are available in the system" });
+          }
+        }
+
+        console.log("Final sender warehouse:", nearToSenderWarehouse);
+        console.log("Final receiver warehouse:", nearToReceiverWarehouse);
+
+        // Additional null checking to ensure we have valid warehouses
+        if (!nearToSenderWarehouse || !nearToSenderWarehouse.id) {
+          console.error("Invalid sender warehouse");
+          return fail(500, { form, errorMessage: "Could not determine a valid warehouse for sender location" });
+        }
+
+        if (!nearToReceiverWarehouse || !nearToReceiverWarehouse.id) {
+          console.error("Invalid receiver warehouse, using sender warehouse");
+          nearToReceiverWarehouse = nearToSenderWarehouse;
+        }
+
+        // Determine if this is an in-city delivery
+        const isInCityBool = inCity === "0";
+
+        // --- CREATE ORDER MILESTONES ---
+        const orderMilestones = [];
+
+        // Standard milestone sequence for all orders
+        orderMilestones.push(
+          {
+            description: "Order Created",
+            coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse.id,
+            isCompleted: true, // This milestone is completed when order is created
+            executionOrder: 1
+          },
+          {
+            description: "Order Accepted",
+            coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse.id,
+            executionOrder: 2
+          },
+          {
+            description: "Order Assigned",
+            coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse.id,
+            executionOrder: 3
+          },
+          {
+            description: "Items Collected",
+            coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse.id,
+            executionOrder: 4
+          }
+        );
+
+        // Add appropriate transit milestone based on in-city or between-cities
+        if (isInCityBool) {
+          orderMilestones.push({
+            description: "In Transit",
+            coordinates: mapAddress,
+            warehouseId: nearToSenderWarehouse.id,
+            executionOrder: 5
+          });
+        } else {
+          orderMilestones.push({
+            description: `Shipped (from ${originCity} to ${destinationCity})`,
+            coordinates: nearToReceiverWarehouse.mapLocation,
+            warehouseId: nearToReceiverWarehouse.id, // This is safe now because we've ensured it's not null
+            executionOrder: 5
+          });
+        }
+
+        // Add final milestones
+        orderMilestones.push(
+          {
+            description: "Delivered",
+            coordinates: dropOffMapAddress,
+            warehouseId: isInCityBool ? nearToSenderWarehouse.id : nearToReceiverWarehouse.id, // This is safe now
+            executionOrder: 6
+          },
+          {
+            description: "Returned",
+            coordinates: null,
+            warehouseId: null,
+            executionOrder: 7
+          }
+        );
+
+        // --- VALIDATE AND PREPARE ORDER DATA ---
+
+        // Convert vehicle type enum if needed
+        let vehicleType = null;
+        if (vehicleTypeInput) {
+          // Convert to Vehicles_vehicleType enum if it matches
+          if (['BIKE', 'CAR', 'TRUCK'].includes(vehicleTypeInput)) {
+            vehicleType = vehicleTypeInput as Vehicles_vehicleType;
+          }
+        }
+
+        // Calculate dimensional weight if dimensions are provided
+        let dimensionalWeight = 0;
+        if (formData.length && formData.width && formData.height) {
+          try {
+            const length = typeof formData.length === 'number' ?
+              formData.length : parseFloat(String(formData.length));
+
+            const width = typeof formData.width === 'number' ?
+              formData.width : parseFloat(String(formData.width));
+
+            const height = typeof formData.height === 'number' ?
+              formData.height : parseFloat(String(formData.height));
+
+            if (isNaN(length) || isNaN(width) || isNaN(height)) {
+              console.warn("Invalid dimensions provided, using default dimensional weight");
+            } else if (length <= 0 || width <= 0 || height <= 0) {
+              console.warn("Dimensions must be positive, using default dimensional weight");
+            } else {
+              dimensionalWeight = (length * width * height) / 5000;
+            }
+          } catch (error) {
+            console.warn("Error calculating dimensional weight:", error);
+          }
+        }
+
+        // Use the higher of actual weight or dimensional weight as effective weight
+        const effectiveWeight = Math.max(actualWeight, dimensionalWeight);
+
+        // Server-side price calculation/validation
+        // (In a production system, you would recalculate all prices here)
+        const pricingConfig = await getPricingConfig();
+
+        // Validate total cost against pricing configuration
+        // This is just a basic validation - in production, you would do a complete calculation
+        if (totalCost <= 0) {
+          return fail(400, { form, errorMessage: "Invalid total cost: must be greater than zero" });
+        }
+
+        // --- CREATE ORDER ---
+        console.log("Creating order with the following data:", {
+          senderCustomerId: Number(session?.customerData.id),
+          packageType: packageType,
+          totalCost: totalCost,
+          isInCity: isInCityBool,
+        });
+
+        const orderData = {
+          senderCustomerId: Number(session?.customerData.id),
+          dropOffPhysicalLocation: dropOffLocation,
+          dropOffMapLocation: dropOffMapAddress,
+          orderStatus: "BEING_REVIEWED" as Order_orderStatus,
+          packageType: packageType as PackageType,
+          paymentStatus: false,
+          paymentOption: paymentOption,
+          pickUpMapLocation: mapAddress,
+          pickUpPhysicalLocation: pickUpLocation,
+          dropOffTime: formData.dropOffTime || null,
+          pickUpTime: pickUpTime || null,
+          receiverCustomerId: receiverId ? Number(receiverId) : null,
+          receiverEmail: receiverEmail ?? null,
+          receiverPhoneNumber: receiverPhoneNumber ?? null,
+          receiverName: receiverUsername ?? null,
+          isInCity: isInCityBool,
+
+          // Pricing calculation details
+          baseShippingCost: priceBreakdown.baseShippingCost || 0,
+          customerTypeMultiplier: priceBreakdown.customerTypeMultiplier || 1,
+          subscriptionTypeMultiplier: priceBreakdown.subscriptionTypeMultiplier || 1,
+          orderTypeMultiplier: priceBreakdown.orderTypeMultiplier || 1,
+          goodsTypeMultiplier: priceBreakdown.goodsTypeMultiplier || 1,
+          premiumTypeMultiplier: priceBreakdown.premiumTypeMultiplier || 1,
+          vehicleMultiplier: priceBreakdown.vehicleTypeMultiplier || 1,
+          peakHourMultiplier: 1,
+          multipliedShippingCost: priceBreakdown.multipliedShippingCost || 0,
+          packagingCost: priceBreakdown.packagingCost || 0,
+          totalAdditionalFees: priceBreakdown.totalAdditionalFees || 0,
+          totalCost: totalCost || 0,
+
+          // Weight and dimensions
+          actualWeight,
+          dimensionalWeight: dimensionalWeight > 0 ? dimensionalWeight : null,
+          effectiveWeight,
+
+          // Distance and time
+          distanceInKm: distanceInKm > 0 ? distanceInKm : null,
+          estimatedTimeInMinutes: estimatedTimeInMinutes > 0 ? estimatedTimeInMinutes : null,
+
+          // Cities and characteristics
+          originCity,
+          destinationCity,
+          orderType: orderType as OrderType,
+          goodsType: goodsType as GoodsType,
+
+          vehicleType,
+          // Add this field specifically for real-time notifications
+          // This doesn't create an Inventory record, it's just for notifications
+          nearToSenderWarehouseId: nearToSenderWarehouse.id,
+
+          // Milestones
+          orderMilestone: {
+            createMany: {
+              data: orderMilestones.map(milestone => ({
+                description: milestone.description,
+                coordinates: milestone.coordinates,
+                warehouseId: milestone.warehouseId,
+                isCompleted: milestone.isCompleted || false,
+                executionOrder: milestone.executionOrder
+              })),
+            },
+          },
+        };
+
+        // Create the order using the transaction
+        const newOrder = await tx.order.create({
+          data: orderData
+        }).catch(err => {
+          console.error("Error creating order in database:", err);
+          throw err;
+        });
+
+        console.log("Order created successfully with ID:", newOrder.id);
+
+        // Create customer notifications
+        console.log("Creating notifications");
+
+        // Create customer notifications for both sender and receiver (if applicable)
+        await tx.customerNotification.create({
+          data: {
+            customerId: Number(session?.customerData.id),
+            title: "Order Created Successfully",
+            content: `Your order #${newOrder.id} has been created successfully and is being processed.`,
+            type: "ORDER_CREATED",
+            orderId: newOrder.id,
+            metadata: JSON.stringify({
+              order_id: newOrder.id,
+              order_status: newOrder.orderStatus,
+              pickup_location: pickUpLocation,
+              dropoff_location: dropOffLocation,
+            })
+          }
+        });
+        // Create customer notifications for both sender and receiver (if applicable)
+        await tx.employeeNotification.create({
+          data: {
+            // employeeId: Number(session?.userData.id),
+            warehouseId: nearToSenderWarehouse.id,
+            title: "Order Created Successfully",
+            content: `New order #${newOrder.id} has been assigned to ${nearToSenderWarehouse.name}.`,
+            type: "ORDER_CREATED",
+            orderId: newOrder.id,
+            updatedAt: new Date(),
+            employeeId: null, // Explicitly set to null since it's required by Prisma validation
+            metadata: JSON.stringify({
+              order_id: newOrder.id,
+              order_status: newOrder.orderStatus,
+              pickup_location: pickUpLocation,
+              dropoff_location: dropOffLocation,
+            })
+          }
+        });
+
+        // Notify receiver if they are a registered customer
+        if (receiverId) {
+          await tx.customerNotification.create({
+            data: {
+              customerId: Number(receiverId),
+              title: "New Order Coming Your Way",
+              content: `An order #${newOrder.id} from ${session?.userData.userName} is being sent to you.`,
+              type: "ORDER_RECEIVED",
+              orderId: newOrder.id,
+              metadata: JSON.stringify({
+                order_id: newOrder.id,
+                order_status: newOrder.orderStatus,
+                sender_name: session?.userData.userName,
+                sender_phone: session?.userData.phoneNumber,
+              })
+            }
+          });
+        }
+
+        // --- SEND EMAIL NOTIFICATIONS ---
+        // Note: We're moving email sending completely outside the transaction
+        // Just store the data needed for emails
+        emailData = {
+          orderForEmails: newOrder,
+          receiverEmail: newOrder.receiverEmail,
+          userName: session?.userData.userName || '',
+          phoneNumber: session?.userData.phoneNumber || '',
+          pickUpPhysicalLocation: newOrder.pickUpPhysicalLocation,
+          dropOffPhysicalLocation: newOrder.dropOffPhysicalLocation,
+          senderEmail: session?.userData.email || null,
+          packageType,
+          pickUpLocation,
+          dropOffLocation,
+          totalCost
+        };
+
+        console.log("Transaction completed successfully, returning data");
+
+        // Return order data
+        return {
+          form,
+          success: true,
+          newOrder: true,
+          orderId: newOrder.id,
+          message: "Order created successfully"
+        };
+      }, {
+        // Set longer timeout for transaction (default is 5000ms)
+        timeout: 30000, // Increased to 30 seconds
+        // Add additional transaction options as needed
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      });
+
+      // After transaction is committed, send realtime notifications with a delay
+      try {
+        // Add a small delay to ensure the transaction is fully committed before trying to fetch the order
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Check if we have access to the socket notification function
+        if (locals.notifyNewOrder && result && 'success' in result && result.orderId) {
+          // Notify all connected clients about the new order
+          await locals.notifyNewOrder(result.orderId);
+          console.log(`Real-time notification sent for order ${result.orderId}`);
+        }
+      } catch (socketError) {
+        // Don't fail the request if the socket notification fails
+        console.error("Failed to send real-time notification:", socketError);
+      }
+
+      // Send emails outside of transaction
+      if (emailData && emailData !== null) {
+        try {
+          // 1. Send email to receiver if they have an email
+          if (emailData.receiverEmail) {
+            await sendMail(
+              emailData.receiverEmail,
+              "Order coming to you has been created",
+              `An order with id ${emailData.orderForEmails.id} from ${emailData.userName}, (${emailData.phoneNumber}) is coming to ${emailData.dropOffPhysicalLocation} from ${emailData.pickUpPhysicalLocation}`
+            );
+            console.log(`Email notification sent to receiver: ${emailData.receiverEmail}`);
+          }
+
+          // 2. Send confirmation email to sender
+          if (emailData.senderEmail) {
+            await sendMail(
+              emailData.senderEmail,
+              "Your order has been created successfully",
+              `Your order with ID ${emailData.orderForEmails.id} has been created successfully. 
+           
+Package Details:
+- Type: ${emailData.packageType}
+- Pickup: ${emailData.pickUpLocation}
+- Delivery: ${emailData.dropOffLocation}
+- Estimated Cost: $${emailData.totalCost.toFixed(2)}
+           
+Your order is being processed and will be picked up soon. You can track your order status in your account.`
+            );
+            console.log(`Confirmation email sent to sender: ${emailData.senderEmail}`);
+          }
+        } catch (emailError) {
+          // Log email errors but don't fail the request
+          console.error("Error sending email notifications outside transaction:", emailError);
         }
       }
 
-      // 2. Send confirmation email to sender
-      if (session?.userData.email) {
-        const emailSentToSender = await sendMail(
-          session.userData.email,
-          "Your order has been created successfully",
-          `Your order with ID ${newOrder.id} has been created successfully. 
-           
-Package Details:
-- Type: ${packageType}
-- Pickup: ${pickUpLocation}
-- Delivery: ${dropOffLocation}
-- Estimated Cost: $${totalCost.toFixed(2)}
-           
-Your order is being processed and will be picked up soon. You can track your order status in your account.`
-        );
-        console.log(`Confirmation email sent to sender: ${session.userData.email}`);
-      }
-
-      return {
-        success: true,
-        newOrder: newOrder,
-        orderId: newOrder.id, // Include the order ID for redirection
-      };
+      return result;
     } catch (error) {
+      if (error instanceof Response) {
+        // If this is our redirect response, just rethrow it
+        console.log("Caught redirect response, rethrowing");
+        throw error;
+      }
       console.error("Error creating order:", error);
-      return fail(500, { errorMessage: "Failed to create order: " + (error as Error).message });
+      return fail(500, { form, errorMessage: "Failed to create order: " + (error as Error).message });
     }
   },
-
-  searchCustomer: async (event) => {
-    const data = await event.request.formData();
-    const query = data.get("searchCustomer");
-    const session =
-      (await event.locals.getSession()) as EnhancedSessionType | null;
-
-    const customerFound = await prisma.customer.findMany({
-      where: {
-        id: {
-          not: session?.customerData.id,
-        },
-        OR: [
-          {
-            User: {
-              email: {
-                contains: query?.toString(),
-              },
-              isEmployee: false,
-            },
-          },
-          {
-            User: {
-              phoneNumber: {
-                contains: query?.toString(),
-              },
-              isEmployee: false,
-            },
-          },
-          {
-            User: {
-              userName: {
-                contains: query?.toString(),
-              },
-              isEmployee: false,
-            },
-          },
-        ],
-      },
-      include: {
-        User: true,
-      },
-    });
-    return { customerFound };
-  },
 };
+
+
+
+

@@ -2,6 +2,8 @@ import { prisma } from "$lib/utils/prisma.js";
 import { redirect } from "@sveltejs/kit";
 import { superValidate } from "sveltekit-superforms/server";
 import { z } from "zod";
+import type { Order_orderStatus } from "@prisma/client";
+import { zod } from "sveltekit-superforms/adapters";
 
 const addOrderRatingSchema = z.object({
   comment: z.string(),
@@ -15,6 +17,14 @@ const addDriverRatingSchema = z.object({
   driverUserId: z.number(),
   customerId: z.number(),
 });
+
+// Type-safe order status constants
+const ORDER_STATUS = {
+  BEING_REVIEWED: "BEING_REVIEWED" as Order_orderStatus,
+  WAITING: "WAITING" as Order_orderStatus,
+  ACCEPTED: "ACCEPTED" as Order_orderStatus,
+  CANCELLED: "CANCELLED" as Order_orderStatus
+};
 
 export const load = async (event) => {
   if (!event.params.orderId) {
@@ -98,7 +108,7 @@ export const load = async (event) => {
     },
   });
 
-  if (orderDetail?.orderStatus === "UNCLAIMED" || !orderDetail?.paymentStatus) {
+  if (orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED || !orderDetail?.paymentStatus) {
     if (orderDetail?.paymentOption === "pay_now" && orderDetail?.paymentStatus) {
       // Allow viewing - don't redirect
     } else if (orderDetail?.paymentOption === "pay_on_delivery") {
@@ -108,9 +118,9 @@ export const load = async (event) => {
     }
   }
 
-  const addOrderRatingForm = await superValidate(addOrderRatingSchema);
+  const addOrderRatingForm = await superValidate(zod(addOrderRatingSchema));
 
-  const addDriverRatingForm = await superValidate(addDriverRatingSchema);
+  const addDriverRatingForm = await superValidate(zod(addDriverRatingSchema));
   return { orderDetail, addOrderRatingForm, addDriverRatingForm };
 };
 
@@ -118,7 +128,7 @@ export const actions = {
   addOrderRating: async (event) => {
     const addOrderRatingForm = await superValidate(
       event.request,
-      addOrderRatingSchema
+      zod(addOrderRatingSchema)
     );
 
     const createOrderRating = await prisma.orderRating.create({
@@ -135,7 +145,7 @@ export const actions = {
   addDriverRating: async (event) => {
     const addDriverRatingForm = await superValidate(
       event.request,
-      addDriverRatingSchema
+      zod(addDriverRatingSchema)
     );
 
     const createDriverRating = await prisma.driverRating.create({
@@ -150,4 +160,41 @@ export const actions = {
 
     return { addDriverRatingForm, createDriverRating };
   },
+  cancelOrder: async (event) => {
+    const formData = await event.request.formData();
+    const reason = formData.get('cancellationReason') as string;
+    const orderId = Number(event.params.orderId);
+
+    if (!reason) {
+      return { success: false, error: "Cancellation reason is required" };
+    }
+
+    // Fetch the order to check its status
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { orderStatus: true }
+    });
+
+    // Only allow cancellation if order is in BEING_REVIEWED or WAITING status
+    if (!order || !(order.orderStatus === ORDER_STATUS.BEING_REVIEWED || order.orderStatus === ORDER_STATUS.WAITING)) {
+      return {
+        success: false,
+        error: "This order cannot be cancelled as it is already in progress"
+      };
+    }
+
+    // Update the order status to CANCELLED
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        orderStatus: ORDER_STATUS.CANCELLED,
+        updateAt: new Date() // Update the timestamp
+      }
+    });
+
+    return {
+      success: true,
+      cancelledOrder: updatedOrder
+    };
+  }
 };

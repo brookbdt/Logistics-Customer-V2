@@ -1,5 +1,6 @@
 import { sendMail } from "$lib/utils/send-email.server.js";
 import { fail } from "@sveltejs/kit";
+import { zod } from "sveltekit-superforms/adapters";
 import { setError, superValidate } from "sveltekit-superforms/server";
 import { z } from "zod";
 
@@ -15,7 +16,7 @@ const contactSchema = z.object({
 
 export const load = async () => {
     // Server-side validation form
-    const contactForm = await superValidate(contactSchema);
+    const contactForm = await superValidate(zod(contactSchema));
 
     return {
         contactForm,
@@ -25,7 +26,7 @@ export const load = async () => {
 export const actions = {
     submitContact: async ({ request }) => {
         // Validate the form using superValidate
-        const contactForm = await superValidate(request, contactSchema);
+        const contactForm = await superValidate(request, zod(contactSchema));
 
         // If validation fails, return the form with errors
         if (!contactForm.valid) {

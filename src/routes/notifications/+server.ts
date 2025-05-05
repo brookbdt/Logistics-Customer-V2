@@ -15,7 +15,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 
         // Get the customer ID
         const customer = await prisma.customer.findFirst({
-            where: { id: session.userData.id }
+            where: { userId: session.userData.id }
         });
 
         if (!customer) {
@@ -38,6 +38,8 @@ export const GET: RequestHandler = async ({ locals }) => {
                 }
             }
         });
+
+        //  console.log("notifications", notifications);
 
 
         return json({ success: true, notifications });

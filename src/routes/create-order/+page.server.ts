@@ -1044,7 +1044,7 @@ export const actions = {
         }
 
         // Determine if this is an in-city delivery
-        const isInCityBool = inCity === "0";
+        const isInCityBool = inCity === "1";
 
         // --- CREATE ORDER MILESTONES ---
         const orderMilestones = [];
@@ -1263,7 +1263,7 @@ export const actions = {
             })
           }
         });
-        // Create customer notifications for both sender and receiver (if applicable)
+        // Create employee notifications for both sender and receiver (if applicable)
         await tx.employeeNotification.create({
           data: {
             // employeeId: Number(session?.userData.id),

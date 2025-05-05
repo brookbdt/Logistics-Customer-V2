@@ -2621,7 +2621,7 @@
     </div>
 
     <!-- In-City vs Between Cities Selection -->
-    <div class="mb-6">
+    <!-- <div class="mb-6">
       <label class="block text-sm font-medium text-gray-700 mb-3">
         Delivery Type <span class="text-red-500">*</span>
       </label>
@@ -2670,7 +2670,7 @@
           </div>
         </label>
       </div>
-    </div>
+    </div> -->
 
     <!-- Navigation Buttons -->
     <div class="flex justify-between mt-8">

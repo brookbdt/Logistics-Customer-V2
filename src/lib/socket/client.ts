@@ -431,4 +431,25 @@ function setupMessageHandlers(socket: Socket): void {
             return [data, ...list];
         });
     });
+
+
+    // Handle initial employee notifications
+    socket.on('customerNotifications', (data: Notification[]) => {
+        console.log(`Received ${data.length} customer notifications`);
+
+        notifications.update(list => {
+            // Merge notifications without duplicates
+            const existingIds = new Set(list.map(n => n.id));
+            const newNotifications = data.filter(n => !existingIds.has(n.id));
+
+            // Add new notifications to the list and re-sort by creation date
+            const mergedList = [...list, ...newNotifications].sort((a, b) => {
+                const dateA = new Date(a.createdAt).getTime();
+                const dateB = new Date(b.createdAt).getTime();
+                return dateB - dateA; // Newest first
+            });
+
+            return mergedList;
+        });
+    });
 } 

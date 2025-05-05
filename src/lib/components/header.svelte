@@ -68,7 +68,7 @@
     {#if showNotifications}
       <div
         use:clickOutside={closeNotifications}
-        class="absolute right-0 mt-2 w-80 bg-white rounded-md shadow-lg z-10 max-h-96 overflow-y-auto"
+        class="absolute right-0 mt-2 w-80 bg-white rounded-md shadow-lg z-50 max-h-96 overflow-y-auto"
       >
         <div class="p-3 border-b">
           <h3 class="text-lg font-medium">Notifications</h3>

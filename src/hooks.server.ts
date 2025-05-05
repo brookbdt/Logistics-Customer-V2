@@ -192,13 +192,23 @@ const localeHook: Handle = async ({ event, resolve }) => {
                 console.log(`Connecting to admin socket server at ${socketUrl} to emit order created event`);
 
                 // Connect to the admin app's socket server
-                const socket = io(socketUrl, {
-                    transports: ['polling', 'websocket'], // Allow both transports for better compatibility
-                    timeout: 5000,
-                    reconnection: false,
-                    path: '/socket.io/'
+                const socket = io(adminSocketUrl, {
+                    transports: ['polling', 'websocket'],
+                    timeout: 15000, // Increased timeout
+                    reconnection: true,
+                    reconnectionAttempts: 3,
+                    reconnectionDelay: 1000,
+                    path: '/socket.io/',
+                    auth: {
+                        source: 'customer_app_server',
+                        secret: process.env.SOCKET_INTER_APP_SECRET || 'customer-to-admin-socket-key',
+                        orderId: order.id
+                    },
+                    extraHeaders: {
+                        'Origin': 'https://app.behulum.com',
+                        'X-App-Source': 'customer-app-server'
+                    }
                 });
-
                 // Set up connection handlers
                 socket.on('connect', () => {
                     console.log(`Customer app connected to admin socket server with ID: ${socket.id}`);
@@ -206,6 +216,8 @@ const localeHook: Handle = async ({ event, resolve }) => {
                     // Emit the order created event to the admin_orders room
                     console.log(`Emitting orderCreated event for order ${order.id} to admin_orders room`);
                     socket.emit('orderCreated', order);
+
+
 
                     // Also emit to admin socket server's internal event
                     console.log(`Emitting server-side orderCreated event for order ${order.id}`);
@@ -215,7 +227,7 @@ const localeHook: Handle = async ({ event, resolve }) => {
                     setTimeout(() => {
                         console.log('Disconnecting from admin socket server after emitting event');
                         socket.disconnect();
-                    }, 1000);
+                    }, 5000); // Increased from 1000ms to 5000ms to give more time for event processing
                 });
 
                 socket.on('connect_error', (error) => {

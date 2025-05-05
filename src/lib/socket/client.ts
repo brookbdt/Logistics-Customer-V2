@@ -2,6 +2,9 @@
 import { io, Socket } from 'socket.io-client';
 import { writable, derived } from 'svelte/store';
 import type { Readable } from 'svelte/store';
+import { realtimeDisabled } from './stores';
+import { browser } from '$app/environment';
+import { getSocketUrl } from './config';
 
 type Driver = {
     id: number;
@@ -45,7 +48,9 @@ let currentSocketUrl: string | null = null;
 const MAX_CONNECTION_ATTEMPTS = 5;
 const RETRY_DELAY = 2000; // 2 seconds between retries
 const FALLBACK_PORTS = [4003, 4002, 4001, 4004, 4005]; // Updated to prioritize port 4003
-
+let reconnectAttempts = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const MAX_RECONNECT_ATTEMPTS = 5;
 /**
  * Get the active socket port from the server
  */
@@ -70,42 +75,24 @@ async function getActiveSocketPort(): Promise<number | null> {
     }
 }
 
-/**
- * Generate the appropriate socket URL based on environment
- */
-async function getSocketUrl(): Promise<string> {
-    // In production, use the configured socket URL if available
-    if (import.meta.env.PROD && import.meta.env.VITE_SOCKET_URL) {
-        return import.meta.env.VITE_SOCKET_URL;
-    }
-
-    // For local development with a remote socket server
-    if (import.meta.env.VITE_USE_REMOTE_SOCKET === 'true') {
-        return import.meta.env.VITE_SOCKET_URL || `${window.location.protocol}//${window.location.hostname}:4003`;
-    }
-
-    // Otherwise, try to discover the active port
-    const activePort = await getActiveSocketPort();
-
-    // If we got a port from the server, use it
-    if (activePort) {
-        return `${window.location.protocol}//${window.location.hostname}:${activePort}`;
-    }
-
-    // Directly use port 3005 as default rather than trying FALLBACK_PORTS
-    return `${window.location.protocol}//${window.location.hostname}:3005`;
-}
 
 /**
  * Initialize socket connection
  */
-export async function initSocket(url?: string): Promise<Socket | null> {
+export async function initSocket(): Promise<Socket | null> {
     // Only run in browser
-    if (typeof window === 'undefined') return null;
+    if (!browser) return null;
+
+    // Reset disabled flag when trying to reconnect
+    realtimeDisabled.set(false);
+
+    // Get the socket URL
+    const socketUrl = getSocketUrl();
+    console.log(`Determined socket URL: ${socketUrl}`);
 
     // Already trying to connect
-    if (socketInstance && !socketInstance.connected && url === currentSocketUrl) {
-        console.log('Already attempting to connect to', url);
+    if (socketInstance && !socketInstance.connected) {
+        console.log('Already attempting to connect');
         return socketInstance;
     }
 
@@ -117,81 +104,95 @@ export async function initSocket(url?: string): Promise<Socket | null> {
         socketInstance = null;
     }
 
+    // Clear any existing reconnect timer
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+
+    // Reset reconnect attempts when manually initiating a connection
+    reconnectAttempts = 0;
+
     try {
-        // If no specific URL is provided, get the appropriate URL for the environment
-        if (!url) {
-            console.log('Determining socket URL...');
-            url = await getSocketUrl();
-            console.log('Determined socket URL:', url);
-        }
+        console.log(`Trying to connect to Socket.io server at ${socketUrl}`);
 
-        currentSocketUrl = url;
-        console.log(`Trying to connect to Socket.io server at ${url}`);
-
-        socketInstance = io(url, {
+        // Initialize with polling first for reliability - more compatible with proxies
+        socketInstance = io(socketUrl, {
             autoConnect: true,
             reconnection: true,
             reconnectionAttempts: 3,
             reconnectionDelay: 1000,
-            timeout: 10000, // 10s timeout
-            transports: ['websocket', 'polling'] // Try WebSocket first, then fall back to polling
+            timeout: 10000,
+            transports: ['polling', 'websocket'], // Allow both transports for better compatibility
+            forceNew: true,
+            withCredentials: false,
+            path: '/socket.io/',
+            extraHeaders: {}
         });
 
         // Set up event handlers
         socketInstance.on('connect', () => {
-            console.log('Connected to socket server at:', url);
+            console.log(`Successfully connected to socket server with ID: ${socketInstance?.id}`);
             isConnected.set(true);
             socketError.set(null);
-            connectionAttempts = 0;
+            reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+
+            // Setup message handlers once connected
+            setupMessageHandlers(socketInstance!);
         });
 
         socketInstance.on('disconnect', (reason) => {
             console.log('Disconnected from socket server:', reason);
             isConnected.set(false);
+
+            // If the disconnect was intentional, don't auto-reconnect
+            if (reason === 'io client disconnect') {
+                return;
+            }
+
+            // Otherwise, schedule a reconnect
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                const delay = Math.min(1000 * (reconnectAttempts + 1), 10000);
+                console.log(`Scheduling reconnect attempt in ${delay}ms`);
+                reconnectTimer = setTimeout(() => {
+                    reconnectAttempts++;
+                    console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+                    initSocket();
+                }, delay);
+            } else {
+                console.error('Max reconnect attempts reached');
+                realtimeDisabled.set(true);
+                socketError.set({
+                    message: 'Real-time updates are disabled after failed connection attempts',
+                    details: 'The application will continue to work without real-time updates.'
+                });
+            }
         });
 
         socketInstance.on('connect_error', (error) => {
             console.error('Connection error:', error);
             isConnected.set(false);
+            socketError.set({
+                message: 'Failed to connect to real-time server',
+                details: error.message || 'Unknown error'
+            });
 
-            // Try next port if we've not exceeded max attempts
-            connectionAttempts++;
-
-            if (connectionAttempts <= MAX_CONNECTION_ATTEMPTS) {
-                // Clean up existing connection
-                socketInstance?.disconnect();
-                socketInstance?.close();
-                socketInstance = null;
-
-                // Get next port in sequence
-                const nextPortIndex = connectionAttempts % FALLBACK_PORTS.length;
-                const nextPort = FALLBACK_PORTS[nextPortIndex];
-
-                console.log(`Connection failed, trying port ${nextPort} (attempt ${connectionAttempts})`);
-
-                // Try with next port after a short delay
-                setTimeout(() => {
-                    const nextUrl = `${window.location.protocol}//${window.location.hostname}:${nextPort}`;
-                    initSocket(nextUrl);
-                }, RETRY_DELAY);
-            } else {
-                socketError.set({
-                    message: 'Failed to connect to the real-time server after multiple attempts',
-                    details: error.message
-                });
-                console.log('Real-time functionality disabled after multiple failed attempts');
+            // If this is our last attempt, disable realtime
+            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS - 1) {
+                realtimeDisabled.set(true);
             }
         });
 
-        // Set up message handlers
-        setupMessageHandlers(socketInstance);
+        // Listen for welcome message
+        socketInstance.on('welcome', (data) => {
+            console.log('Received welcome message from socket server:', data);
+        });
 
-        // Update the store
+        // Set up the socket in the store
         socket.set(socketInstance);
-
         return socketInstance;
     } catch (error) {
-        console.error('Failed to initialize socket:', error);
+        console.error('Error during socket initialization:', error);
         socketError.set({
             message: 'Failed to initialize real-time connection',
             details: error instanceof Error ? error.message : String(error)

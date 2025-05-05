@@ -14,6 +14,8 @@ declare global {
   namespace App {
     interface Locals {
       getSession(): Promise<EnhancedSessionType | null>;
+      adminSocketUrl?: string
+      socketIO?: any
       notifyNewOrder(orderId: number): Promise<void>;
     }
     interface PageData {

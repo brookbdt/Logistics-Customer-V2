@@ -2,23 +2,11 @@ import { authHook } from "$lib/hooks/auth-hook.server";
 import { redirect } from "@sveltejs/kit";
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
-import { notifyNewOrder as socketNotifyNewOrder } from "$lib/socket/server";
+import { io } from 'socket.io-client';
 import { PrismaClient } from "@prisma/client";
-import { io } from "socket.io-client";
 
-// Initialize Prisma client
 const prisma = new PrismaClient();
 
-// Extend Locals type to include socket connection details
-declare global {
-    namespace App {
-        interface Locals {
-            socketPort?: number | null;
-            socketIO?: any;
-            notifyNewOrder(orderId: number): Promise<void>;
-        }
-    }
-}
 
 // Helper function to check if a route is an API route
 function isApiRoute(url: string): boolean {
@@ -77,10 +65,53 @@ const domainHook: Handle = async ({ event, resolve }) => {
     return resolve(event);
 };
 
+// Post-auth hook to handle routes that need session data
+const sessionHook: Handle = async ({ event, resolve }) => {
+    const host = event.request.headers.get('host');
+    const url = event.url.pathname;
+
+    // Skip session checks for API routes
+    if (isApiRoute(url)) {
+        return resolve(event);
+    }
+
+    try {
+        // The session is added by the authHook
+        const session = await event.locals.getSession();
+
+        // Handle app subdomain (customer app)
+        if (host?.startsWith('app.behulum.com') && url === '/' && !session) {
+            throw redirect(302, '/auth');
+        }
+    } catch (error) {
+        // If getSession fails, we'll just continue for API routes
+        // but log for non-API routes
+        if (!isApiRoute(url)) {
+            console.error('Session check failed:', error);
+        }
+    }
+
+    return resolve(event);
+};
+
+const getAdminSocketUrl = (): string => {
+    // In production, use the actual admin app URL
+    if (process.env.NODE_ENV === 'production') {
+        // Use the ADMIN_URL environment variable or a default production URL
+        return process.env.ADMIN_URL || 'https://admin.behulum.com';
+    }
+
+    // In development, use localhost with the admin socket port
+    return 'http://localhost:3005';
+};
+
 const localeHook: Handle = async ({ event, resolve }) => {
     // Make connection details available to endpoint handlers
     // The customer app doesn't run its own socket server, but it needs to know which port to connect to
-    event.locals.socketPort = 4003; // Updated to use port 4003 to match the admin app
+
+    // Store the admin socket URL in locals
+    const adminSocketUrl = getAdminSocketUrl();
+    event.locals.adminSocketUrl = adminSocketUrl;
     event.locals.socketIO = null;
 
     // Add the notifyNewOrder function to locals
@@ -157,14 +188,15 @@ const localeHook: Handle = async ({ event, resolve }) => {
 
             // IMPORTANT: Now we also need to send a socket.io event to the admin app
             try {
-                const socketUrl = `http://localhost:3005`;
+                const socketUrl = getAdminSocketUrl();
                 console.log(`Connecting to admin socket server at ${socketUrl} to emit order created event`);
 
                 // Connect to the admin app's socket server
                 const socket = io(socketUrl, {
-                    transports: ['websocket'],
+                    transports: ['polling', 'websocket'], // Allow both transports for better compatibility
                     timeout: 5000,
-                    reconnection: false
+                    reconnection: false,
+                    path: '/socket.io/'
                 });
 
                 // Set up connection handlers
@@ -207,35 +239,6 @@ const localeHook: Handle = async ({ event, resolve }) => {
             console.error(`Error in notifyNewOrder for order ${orderId}:`, error);
         }
     };
-
-    return resolve(event);
-};
-
-// Post-auth hook to handle routes that need session data
-const sessionHook: Handle = async ({ event, resolve }) => {
-    const host = event.request.headers.get('host');
-    const url = event.url.pathname;
-
-    // Skip session checks for API routes
-    if (isApiRoute(url)) {
-        return resolve(event);
-    }
-
-    try {
-        // The session is added by the authHook
-        const session = await event.locals.getSession();
-
-        // Handle app subdomain (customer app)
-        if (host?.startsWith('app.behulum.com') && url === '/' && !session) {
-            throw redirect(302, '/auth');
-        }
-    } catch (error) {
-        // If getSession fails, we'll just continue for API routes
-        // but log for non-API routes
-        if (!isApiRoute(url)) {
-            console.error('Session check failed:', error);
-        }
-    }
 
     return resolve(event);
 };

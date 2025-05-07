@@ -1101,14 +1101,15 @@ export const actions = {
             description: "Delivered",
             coordinates: dropOffMapAddress,
             warehouseId: isInCityBool ? nearToSenderWarehouse.id : nearToReceiverWarehouse.id, // This is safe now
-            executionOrder: 6
+            executionOrder: 6,
+            isLastMilestone: true
           },
-          {
-            description: "Returned",
-            coordinates: null,
-            warehouseId: null,
-            executionOrder: 7
-          }
+          // {
+          //   description: "Returned",
+          //   coordinates: null,
+          //   warehouseId: null,
+          //   executionOrder: 7
+          // }
         );
 
         // --- VALIDATE AND PREPARE ORDER DATA ---
@@ -1228,7 +1229,8 @@ export const actions = {
                 coordinates: milestone.coordinates,
                 warehouseId: milestone.warehouseId,
                 isCompleted: milestone.isCompleted || false,
-                executionOrder: milestone.executionOrder
+                executionOrder: milestone.executionOrder,
+                isLastMilestone: milestone.isLastMilestone || false
               })),
             },
           },

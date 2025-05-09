@@ -1098,7 +1098,7 @@ export const actions = {
         // Add final milestones
         orderMilestones.push(
           {
-            description: "Delivered",
+            description: "Delivered to Customer",
             coordinates: dropOffMapAddress,
             warehouseId: isInCityBool ? nearToSenderWarehouse.id : nearToReceiverWarehouse.id, // This is safe now
             executionOrder: 6,

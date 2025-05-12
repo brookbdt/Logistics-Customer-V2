@@ -25,19 +25,20 @@ export type addPaymentType = z.infer<typeof addPaymentSchema>;
 
 export const load = async (event) => {
   const { params, depends } = event;
-  const orderId = params.orderId;
+  const orderId = Number(params.orderId);
 
   depends(`orders:${orderId}`);
 
   const session =
     (await event.locals.getSession()) as EnhancedSessionType | null;
-  if (!event.params.orderId) {
+  if (!orderId) {
     throw new Error("Order Id not found!");
   }
 
+  // Fetch order details and related data in a single query
   const orderDetail = await prisma.order.findFirst({
     where: {
-      id: Number(event.params.orderId),
+      id: orderId,
     },
     include: {
       Sender: {
@@ -50,29 +51,118 @@ export const load = async (event) => {
           User: true,
         },
       },
+      orderMilestone: {
+        orderBy: {
+          createdAt: 'desc'
+        },
+      },
+      Dispatch: {
+        include: {
+          AssignedEmployee: {
+            include: {
+              User: true
+            }
+          },
+          AssignedVendorDriver: {
+            include: {
+              User: true
+            }
+          }
+        }
+      },
+      OrderDispatch: {
+        include: {
+          Dispatch: {
+            include: {
+              AssignedEmployee: {
+                include: {
+                  User: true
+                }
+              },
+              AssignedVendorDriver: {
+                include: {
+                  User: true
+                }
+              }
+            }
+          }
+        }
+      }
     },
   });
-  const addPaymentForm = superValidate(
+
+  // Check payment status
+  let verifyPayment;
+  if (orderDetail?.paymentRef) {
+    try {
+      const verifyPaymentResponse = await fetch(
+        `https://api.chapa.co/v1/transaction/verify/${orderDetail.paymentRef}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer CHASECK_TEST-XnClzXRLcCLdg7cpBpuVMhPPgeTd7xNo",
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const paymentData = await verifyPaymentResponse.json();
+      console.log("Payment verification response:", paymentData);
+      verifyPayment = paymentData.data;
+
+      // Update payment status if successful
+      if (verifyPayment && verifyPayment.status === "success" && !orderDetail.paymentStatus) {
+        console.log("Payment Verified - updating order payment status");
+        await prisma.order.update({
+          where: { id: orderId },
+          data: { paymentStatus: true }
+        });
+      }
+    } catch (error) {
+      console.error("Error verifying payment:", error);
+    }
+  }
+
+  // Initialize payment form
+  const addPaymentForm = await superValidate(
     {
       email: session?.userData.email || "",
       phoneNumber: session?.userData.phoneNumber || "",
-
-      firstName: session?.userData.userName || "",
-      lastName: session?.userData.userName || "",
+      firstName: session?.userData.userName?.split(' ')[0] || "",
+      lastName: session?.userData.userName?.split(' ')[1] || session?.userData.userName || "",
     } satisfies addPaymentType,
     zod(addPaymentSchema)
   );
-  console.log({ orderDetail });
 
+  // Load configuration data in parallel
+  const [
+    regions,
+    customer,
+    configData
+  ] = await Promise.all([
+    prisma.region.findMany({
+      where: { deletedAt: null },
+    }),
+    session?.customerData.id
+      ? prisma.customer.findUnique({
+        where: { id: Number(session.customerData.id) },
+        include: { User: true }
+      })
+      : null,
+    loadPricingConfig()
+  ]);
 
-  const regions = await prisma.region.findMany({
-    where: { deletedAt: null },
-  });
-  const customer = await prisma.customer.findUnique({
-    where: { id: Number(session?.customerData.id) },
-    include: { User: true }
-  });
+  return {
+    orderDetail,
+    addPaymentForm,
+    regions,
+    customer,
+    pricingConfig: configData
+  };
+};
 
+// Helper function to load pricing configuration data
+async function loadPricingConfig() {
   const [
     cities,
     pricingMatrix,
@@ -81,7 +171,6 @@ export const load = async (event) => {
     orderTypeMultipliers,
     goodsTypeMultipliers,
     inCityPricing,
-
     vehicleTypeMultipliers,
     additionalFees,
     subscriptionTypes,
@@ -107,110 +196,98 @@ export const load = async (event) => {
     prisma.premiumTypeMultiplier.findMany({ where: { deletedAt: null } })
   ]);
 
-  // Get customer data
-
-
-
-
-  let verifyPayment;
-  const verifyPaymentResponse = await fetch(
-    `https://api.chapa.co/v1/transaction/verify/${orderDetail?.paymentRef}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: "Bearer CHASECK_TEST-XnClzXRLcCLdg7cpBpuVMhPPgeTd7xNo",
-        "Content-Type": "application/json",
-      },
-    }
-  );
-  await verifyPaymentResponse.json().then((res) => {
-    console.log(res);
-    verifyPayment = res.data;
+  // Create typed record objects
+  const pricingMatrixRecord: Record<string, Record<string, number>> = {};
+  pricingMatrix.forEach(curr => {
+    pricingMatrixRecord[curr.originCity] = pricingMatrixRecord[curr.originCity] || {};
+    pricingMatrixRecord[curr.originCity][curr.destinationCity] = curr.unitRate;
   });
 
-  // @ts-ignore
-  if (verifyPayment && verifyPayment.status === "success") {
-    console.log("Payment Verified");
+  const packagingFeesRecord: Record<string, number> = {};
+  packagingFees.forEach(curr => {
+    packagingFeesRecord[curr.packagingType] = curr.price;
+  });
 
-    const updateOrder = await prisma.order.update({
-      where: {
-        id: Number(event.params.orderId),
-      },
-      data: {
-        paymentStatus: true,
-      },
+  const customerTypeRecord: Record<string, number> = {};
+  customerTypeMultipliers.forEach(curr => {
+    customerTypeRecord[curr.type] = curr.multiplier;
+  });
+
+  const orderTypeRecord: Record<string, number> = {};
+  orderTypeMultipliers.forEach(curr => {
+    orderTypeRecord[curr.type] = curr.multiplier;
+  });
+
+  const goodsTypeRecord: Record<string, number> = {};
+  goodsTypeMultipliers.forEach(curr => {
+    goodsTypeRecord[curr.type] = curr.multiplier;
+  });
+
+  const inCityPricingRecord: Record<string, {
+    baseFare: number;
+    distanceCharge: number;
+    timeCharge: number;
+    cancellationRate: number;
+  }> = {};
+  inCityPricing.forEach(curr => {
+    inCityPricingRecord[curr.city] = {
+      baseFare: curr.baseFare,
+      distanceCharge: curr.distanceCharge,
+      timeCharge: curr.timeCharge,
+      cancellationRate: curr.cancellationRate
+    };
+  });
+
+  const vehicleTypesRecord: Record<string, Record<string, number>> = {};
+  vehicleTypeMultipliers.forEach(curr => {
+    vehicleTypesRecord[curr.city] = vehicleTypesRecord[curr.city] || {};
+    vehicleTypesRecord[curr.city][curr.vehicleType] = curr.multiplier;
+  });
+
+  const additionalFeesRecord: Record<string, Array<{
+    name: string;
+    amount: number;
+    description: string | null;
+  }>> = {};
+  additionalFees.forEach(curr => {
+    additionalFeesRecord[curr.city] = additionalFeesRecord[curr.city] || [];
+    additionalFeesRecord[curr.city].push({
+      name: curr.feeName,
+      amount: curr.feeAmount,
+      description: curr.description
     });
+  });
 
+  const subscriptionTypesRecord: Record<string, number> = {};
+  subscriptionTypes.forEach(curr => {
+    subscriptionTypesRecord[curr.type] = curr.multiplier;
+  });
 
-  } else {
-  }
+  const premiumTypesRecord: Record<string, number> = {};
+  premiumTypeMultipliers.forEach(curr => {
+    premiumTypesRecord[curr.type] = curr.multiplier;
+  });
 
   return {
-    orderDetail, addPaymentForm, regions, customer, pricingConfig: {
-      cities: [...new Set(cities.map(c => c.originCity))],
-      pricingMatrix: pricingMatrix.reduce((acc, curr) => {
-        acc[curr.originCity] = acc[curr.originCity] || {};
-        acc[curr.originCity][curr.destinationCity] = curr.unitRate;
-        return acc;
-      }, {}),
-      packagingFees: packagingFees.reduce((acc, curr) => {
-        acc[curr.packagingType] = curr.price;
-        return acc;
-      }, {}),
-      multipliers: {
-        customerType: customerTypeMultipliers.reduce((acc, curr) => {
-          acc[curr.type] = curr.multiplier;
-          return acc;
-        }, {}),
-        orderType: orderTypeMultipliers.reduce((acc, curr) => {
-          acc[curr.type] = curr.multiplier;
-          return acc;
-        }, {}),
-        goodsType: goodsTypeMultipliers.reduce((acc, curr) => {
-          acc[curr.type] = curr.multiplier;
-          return acc;
-        }, {})
-      },
-      inCityPricing: inCityPricing.reduce((acc, curr) => {
-        acc[curr.city] = {
-          baseFare: curr.baseFare,
-          distanceCharge: curr.distanceCharge,
-          timeCharge: curr.timeCharge,
-          cancellationRate: curr.cancellationRate
-        };
-        return acc;
-      }, {}),
-      vehicleTypes: vehicleTypeMultipliers.reduce((acc, curr) => {
-        acc[curr.city] = acc[curr.city] || {};
-        acc[curr.city][curr.vehicleType] = curr.multiplier;
-        return acc;
-      }, {}),
-      additionalFees: additionalFees.reduce((acc, curr) => {
-        acc[curr.city] = acc[curr.city] || [];
-        acc[curr.city].push({
-          name: curr.feeName,
-          amount: curr.feeAmount,
-          description: curr.description
-        });
-
-        return acc;
-      }, {}),
-      subscriptionTypes: subscriptionTypes.reduce((acc, curr) => {
-        acc[curr.type] = curr.multiplier;
-        return acc;
-      }, {}),
-      premiumTypes: premiumTypeMultipliers.reduce((acc, curr) => {
-        acc[curr.type] = curr.multiplier;
-        return acc;
-      }, {})
-
-    }
+    cities: [...new Set(cities.map(c => c.originCity))],
+    pricingMatrix: pricingMatrixRecord,
+    packagingFees: packagingFeesRecord,
+    multipliers: {
+      customerType: customerTypeRecord,
+      orderType: orderTypeRecord,
+      goodsType: goodsTypeRecord
+    },
+    inCityPricing: inCityPricingRecord,
+    vehicleTypes: vehicleTypesRecord,
+    additionalFees: additionalFeesRecord,
+    subscriptionTypes: subscriptionTypesRecord,
+    premiumTypes: premiumTypesRecord
   };
-};
+}
 
 export let actions = {
   paymentUrl: async (event) => {
-    const addPaymentForm = await superValidate(event.request, addPaymentSchema);
+    const addPaymentForm = await superValidate(event.request, zod(addPaymentSchema));
 
     if (addPaymentForm.errors.phoneNumber) {
       return fail(500, { addPaymentForm, errorMessage: addPaymentForm.errors });
@@ -218,9 +295,9 @@ export let actions = {
 
     const regex = /(^0)|(\d+)/g;
 
-    const validPhoneNumber = addPaymentForm.data.phoneNumber.replace(
+    const validPhoneNumber = (addPaymentForm.data.phoneNumber as string).replace(
       regex,
-      (match) => {
+      (match: string) => {
         if (match[0] === "0") return "";
         return "251" + match;
       }
@@ -300,7 +377,7 @@ export let actions = {
 
   // New action for bank transfer payments
   bankTransfer: async (event) => {
-    const addPaymentForm = await superValidate(event.request, addPaymentSchema);
+    const addPaymentForm = await superValidate(event.request, zod(addPaymentSchema));
 
     if (addPaymentForm.errors.phoneNumber) {
       return fail(500, { addPaymentForm, errorMessage: addPaymentForm.errors });

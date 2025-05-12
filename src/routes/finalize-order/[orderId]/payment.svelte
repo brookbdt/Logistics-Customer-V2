@@ -1,7 +1,7 @@
 <script lang="ts">
   import { toast } from "@zerodevx/svelte-toast";
   import { superForm } from "sveltekit-superforms/client";
-  import { fade, fly } from "svelte/transition";
+  import { fade, fly, slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import type { ActionData, PageData } from "./$types";
   import { createEventDispatcher } from "svelte";
@@ -45,6 +45,140 @@
       maximumFractionDigits: 2,
     }).format(price);
   }
+
+  let paymentMethod = "bank_transfer"; // Default to bank transfer
+  let transactionRef = ""; // For bank transfer reference number
+  let isSubmitting = false;
+  let uploadedFile: File | null = null;
+  let previewUrl: string | null = null;
+
+  // Bank account details for different banks
+  const bankAccounts = [
+    {
+      name: "Commercial Bank of Ethiopia (CBE)",
+      accountNumber: "1000123456789",
+      accountName: "Logistics Customer App",
+      branch: "Bole Branch",
+    },
+    {
+      name: "Dashen Bank",
+      accountNumber: "0123456789",
+      accountName: "Logistics Customer App",
+      branch: "Main Branch",
+    },
+    {
+      name: "Awash Bank",
+      accountNumber: "9876543210",
+      accountName: "Logistics Customer App",
+      branch: "Addis Ababa Branch",
+    },
+    {
+      name: "Telebirr",
+      accountNumber: "0911987654",
+      accountName: "Logistics Customer App",
+    },
+  ];
+
+  // Handle file selection for payment receipt
+  function handleFileChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const file = target.files?.[0];
+    if (!file) {
+      previewUrl = null;
+      uploadedFile = null;
+      return;
+    }
+
+    // Validate file type
+    const validTypes = ["image/jpeg", "image/png", "image/jpg"];
+    if (!validTypes.includes(file.type)) {
+      toast.push("Please upload JPG or PNG files only", {
+        theme: {
+          "--toastBackground": "#F87171",
+          "--toastColor": "white",
+        },
+      });
+      target.value = "";
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.push("File size should be less than 5MB", {
+        theme: {
+          "--toastBackground": "#F87171",
+          "--toastColor": "white",
+        },
+      });
+      target.value = "";
+      return;
+    }
+
+    uploadedFile = file;
+
+    // Create preview URL
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => {
+      previewUrl = reader.result as string;
+    };
+  }
+
+  // Handle bank transfer submission
+  async function handleBankTransferSubmit() {
+    if (!transactionRef.trim()) {
+      toast.push("Please enter a transaction reference number", {
+        theme: {
+          "--toastBackground": "#F87171",
+          "--toastColor": "white",
+        },
+      });
+      return;
+    }
+
+    // Note: In a real implementation, you would upload the screenshot to a server
+    // For now, we'll just proceed with the reference number
+    isSubmitting = true;
+
+    // Simulating form submission - in reality, this would be sent to the server
+    setTimeout(() => {
+      isSubmitting = false;
+      toast.push(
+        "Bank transfer details submitted. Awaiting verification from driver upon pickup.",
+        {
+          theme: {
+            "--toastBackground": "#10B981",
+            "--toastColor": "white",
+          },
+        }
+      );
+
+      // Return to order review
+      dispatch("back");
+    }, 1500);
+  }
+
+  // Handle cash payment selection
+  function selectCashPayment() {
+    toast.push(
+      "Cash payment selected. Please have the exact amount ready for your driver.",
+      {
+        theme: {
+          "--toastBackground": "#10B981",
+          "--toastColor": "white",
+        },
+      }
+    );
+
+    // Return to order review
+    dispatch("back");
+  }
+
+  // Helper function to safely format price
+  function safeFormatPrice(price: number | null | undefined): string {
+    if (price === null || price === undefined) return "0.00";
+    return price.toFixed(2);
+  }
 </script>
 
 <div class={className} in:fade={{ duration: 300 }}>
@@ -68,353 +202,36 @@
         <h3 class="text-sm font-medium text-gray-700 mb-3">
           Select Payment Method
         </h3>
-        <div class="grid grid-cols-2 gap-3">
-          <button
-            class="border rounded-lg p-3 flex flex-col items-center justify-center {selectedPaymentMethod ===
-            'card'
-              ? 'border-secondary bg-secondary/5'
+        <div class="space-y-3">
+          <div
+            class="flex items-center p-4 border rounded-lg cursor-pointer {paymentMethod ===
+            'bank_transfer'
+              ? 'border-blue-500 bg-blue-50'
               : 'border-gray-200'}"
-            on:click={() => (selectedPaymentMethod = "card")}
+            on:click={() => (paymentMethod = "bank_transfer")}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6 mb-1 {selectedPaymentMethod === 'card'
-                ? 'text-secondary'
-                : 'text-gray-500'}"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
-              />
-            </svg>
-            <span class="text-sm font-medium">Card Payment</span>
-          </button>
-
-          <button
-            class="border rounded-lg p-3 flex flex-col items-center justify-center {selectedPaymentMethod ===
-            'mobile'
-              ? 'border-secondary bg-secondary/5'
-              : 'border-gray-200'}"
-            on:click={() => (selectedPaymentMethod = "mobile")}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6 mb-1 {selectedPaymentMethod === 'mobile'
-                ? 'text-secondary'
-                : 'text-gray-500'}"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"
-              />
-            </svg>
-            <span class="text-sm font-medium">Mobile Money</span>
-          </button>
-
-          <button
-            class="border rounded-lg p-3 flex flex-col items-center justify-center {selectedPaymentMethod ===
-            'bank'
-              ? 'border-secondary bg-secondary/5'
-              : 'border-gray-200'}"
-            on:click={() => (selectedPaymentMethod = "bank")}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6 mb-1 {selectedPaymentMethod === 'bank'
-                ? 'text-secondary'
-                : 'text-gray-500'}"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M3 6l9-4 9 4v2m-18 0l9 4 9-4M3 6v12c0 1.1.9 2 2 2h4m10-10v8a2 2 0 01-2 2h-4"
-              />
-            </svg>
-            <span class="text-sm font-medium">Bank Transfer</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Payment Form -->
-      <form
-        use:enhance
-        method="post"
-        action={selectedPaymentMethod === "bank"
-          ? "?/bankTransfer"
-          : "?/paymentUrl"}
-        class="space-y-4"
-        enctype={selectedPaymentMethod === "bank"
-          ? "multipart/form-data"
-          : "application/x-www-form-urlencoded"}
-      >
-        <div in:fade={{ duration: 300 }}>
-          <!-- Social Proof -->
-          <div class="bg-gray-50 rounded-lg p-3 mb-4">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-medium text-gray-700"
-                >Customer Trust</span
-              >
-              <div class="flex">
-                {#each Array(5) as _, i}
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-3.5 w-3.5 text-yellow-400"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"
-                    />
-                  </svg>
-                {/each}
-              </div>
-            </div>
-            <p class="text-xs text-gray-600">
-              <span class="font-medium">98% of customers</span> complete their payment
-              within 5 minutes of placing an order.
-            </p>
-          </div>
-
-          {#if selectedPaymentMethod === "bank"}
-            <!-- Bank Transfer Information -->
-            <div class="bg-gray-50 p-4 rounded-lg mb-4">
-              <h4 class="text-sm font-medium text-gray-700 mb-2">
-                Bank Transfer Information
-              </h4>
-              <p class="text-sm text-gray-600 mb-3">
-                Please transfer the exact amount to one of our bank accounts
-                below:
-              </p>
-
-              <div class="space-y-3">
-                <div class="border border-gray-200 rounded-lg p-3">
-                  <div class="flex justify-between items-center">
-                    <div>
-                      <p class="font-medium text-sm">
-                        Commercial Bank of Ethiopia
-                      </p>
-                      <p class="text-xs text-gray-500">
-                        Account: 1000123456789
-                      </p>
-                      <p class="text-xs text-gray-500">
-                        Name: Logistics Company Ltd.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      class="text-secondary text-xs font-medium"
-                      on:click={() => {
-                        navigator.clipboard.writeText("1000123456789");
-                        toast.push("Account number copied!");
-                      }}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                </div>
-
-                <div class="border border-gray-200 rounded-lg p-3">
-                  <div class="flex justify-between items-center">
-                    <div>
-                      <p class="font-medium text-sm">Dashen Bank</p>
-                      <p class="text-xs text-gray-500">Account: 0987654321</p>
-                      <p class="text-xs text-gray-500">
-                        Name: Logistics Company Ltd.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      class="text-secondary text-xs font-medium"
-                      on:click={() => {
-                        navigator.clipboard.writeText("0987654321");
-                        toast.push("Account number copied!");
-                      }}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="mt-4">
-                <label class="block">
-                  <span class="text-sm font-medium text-gray-700 block mb-1"
-                    >Upload Payment Receipt</span
-                  >
-                  <input
-                    type="file"
-                    name="receiptFile"
-                    accept="image/*"
-                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-                  />
-                  <p class="text-xs text-gray-500 mt-1">
-                    Please upload a screenshot or photo of your payment receipt
-                  </p>
-                </label>
-              </div>
-
-              <div class="mt-4">
-                <label class="block">
-                  <span class="text-sm font-medium text-gray-700 block mb-1"
-                    >Transaction Reference</span
-                  >
-                  <input
-                    type="text"
-                    name="transactionRef"
-                    placeholder="Enter transaction reference number"
-                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-                  />
-                </label>
-              </div>
-            </div>
-          {/if}
-
-          <label class="block">
-            <span class="text-sm font-medium text-gray-700 block mb-1"
-              >Email</span
-            >
-            <input
-              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-              type="email"
-              name="email"
-              placeholder="your@email.com"
-              value={$addPaymentForm.email}
-              {...$constraints.email}
-            />
-            {#if $errors.email}
-              <p class="text-red-600 text-xs mt-1">{$errors.email}</p>
-            {/if}
-          </label>
-
-          <div class="grid grid-cols-2 gap-3 mt-4">
-            <label class="block">
-              <span class="text-sm font-medium text-gray-700 block mb-1"
-                >First Name</span
-              >
-              <input
-                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-                type="text"
-                name="firstName"
-                placeholder="First Name"
-                value={$addPaymentForm.firstName}
-                {...$constraints.firstName}
-              />
-              {#if $errors.firstName}
-                <p class="text-red-600 text-xs mt-1">{$errors.firstName}</p>
-              {/if}
-            </label>
-
-            <label class="block">
-              <span class="text-sm font-medium text-gray-700 block mb-1"
-                >Last Name</span
-              >
-              <input
-                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-                type="text"
-                name="lastName"
-                placeholder="Last Name"
-                value={$addPaymentForm.lastName}
-                {...$constraints.lastName}
-              />
-              {#if $errors.lastName}
-                <p class="text-red-600 text-xs mt-1">{$errors.lastName}</p>
-              {/if}
-            </label>
-          </div>
-
-          <label class="block mt-4">
-            <span class="text-sm font-medium text-gray-700 block mb-1"
-              >Phone Number</span
-            >
-            <div class="relative">
+            <div class="flex-shrink-0 mr-4">
               <div
-                class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none"
+                class="h-5 w-5 rounded-full border-2 {paymentMethod ===
+                'bank_transfer'
+                  ? 'border-blue-500'
+                  : 'border-gray-400'} flex items-center justify-center"
               >
-                <span class="text-gray-500">+</span>
+                {#if paymentMethod === "bank_transfer"}
+                  <div class="h-3 w-3 rounded-full bg-blue-500"></div>
+                {/if}
               </div>
-              <input
-                class="w-full p-3 pl-8 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all"
-                type="tel"
-                name="phoneNumber"
-                placeholder="251xxxxxxxxx"
-                value={$addPaymentForm.phoneNumber}
-                {...$constraints.phoneNumber}
-              />
             </div>
-            {#if $errors.phoneNumber}
-              <p class="text-red-600 text-xs mt-1">{$errors.phoneNumber}</p>
-            {/if}
-          </label>
-
-          <!-- Security Features -->
-          <div class="mt-6 bg-gray-50 p-3 rounded-lg">
-            <h4 class="text-sm font-medium text-gray-700 mb-2">
-              Secure Payment
-            </h4>
-            <div class="flex justify-between">
-              {#each securityFeatures as feature}
-                <div class="flex flex-col items-center">
-                  <span class="text-xl mb-1">{feature.icon}</span>
-                  <span class="text-xs text-gray-600">{feature.text}</span>
-                </div>
-              {/each}
+            <div class="flex-grow">
+              <h4 class="font-medium text-gray-800">Bank Transfer</h4>
+              <p class="text-sm text-gray-600">
+                Transfer to our bank account and provide reference
+              </p>
             </div>
-          </div>
-
-          <!-- Order Summary -->
-          <div class="mt-6 border-t border-gray-200 pt-4">
-            <h4 class="text-sm font-medium text-gray-700 mb-2">
-              Order Summary
-            </h4>
-            <div class="flex justify-between mb-1">
-              <span class="text-sm text-gray-600">Subtotal</span>
-              <span class="text-sm">
-                ${formatPrice(data.orderDetail?.totalCost || 0)}
-              </span>
-            </div>
-            <div class="flex justify-between mb-1">
-              <span class="text-sm text-gray-600">Processing Fee</span>
-              <span class="text-sm">0.00</span>
-            </div>
-            <div
-              class="flex justify-between font-medium pt-2 border-t border-gray-200 mt-2"
-            >
-              <span>Total</span>
-              <span class="text-secondary">
-                ${formatPrice(data.orderDetail?.totalCost || 0)}
-              </span>
-            </div>
-          </div>
-
-          <!-- Payment Button -->
-          <div class="border-t border-gray-200 mt-4 pt-4">
-            <div class="flex justify-between items-center py-2">
-              <span class="text-sm font-medium text-gray-600">Total</span>
-              <span class="text-lg font-bold text-secondary">
-                ETB {formatPrice(data.orderDetail?.totalCost || 0)}
-              </span>
-            </div>
-            <button
-              type="submit"
-              class="w-full bg-secondary flex mt-4 justify-center items-center rounded-lg py-3 text-white font-medium hover:bg-secondary/90 transition-colors"
-            >
+            <div class="flex-shrink-0">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                class="h-5 w-5 mr-2"
+                class="h-6 w-6 text-gray-400"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -423,33 +240,372 @@
                   stroke-linecap="round"
                   stroke-linejoin="round"
                   stroke-width="2"
-                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                  d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"
                 />
               </svg>
-              {#if selectedPaymentMethod === "bank"}
-                Submit Bank Transfer Details
-              {:else if selectedPaymentMethod === "mobile"}
-                Continue to Mobile Payment (ETB {formatPrice(
-                  data.orderDetail?.totalCost || 0
-                )})
-              {:else}
-                Pay ETB {formatPrice(data.orderDetail?.totalCost || 0)}
-              {/if}
-            </button>
+            </div>
           </div>
 
-          <!-- Terms and Privacy -->
-          <p class="text-xs text-gray-500 text-center mt-4">
-            By proceeding, you agree to our <a
-              href="#"
-              class="text-secondary hover:underline">Terms of Service</a
-            >
-            and
-            <a href="#" class="text-secondary hover:underline">Privacy Policy</a
-            >
-          </p>
+          <div
+            class="flex items-center p-4 border rounded-lg cursor-pointer {paymentMethod ===
+            'cash'
+              ? 'border-blue-500 bg-blue-50'
+              : 'border-gray-200'}"
+            on:click={() => (paymentMethod = "cash")}
+          >
+            <div class="flex-shrink-0 mr-4">
+              <div
+                class="h-5 w-5 rounded-full border-2 {paymentMethod === 'cash'
+                  ? 'border-blue-500'
+                  : 'border-gray-400'} flex items-center justify-center"
+              >
+                {#if paymentMethod === "cash"}
+                  <div class="h-3 w-3 rounded-full bg-blue-500"></div>
+                {/if}
+              </div>
+            </div>
+            <div class="flex-grow">
+              <h4 class="font-medium text-gray-800">Cash Payment</h4>
+              <p class="text-sm text-gray-600">
+                Pay with cash upon {data.orderDetail?.paymentOption ===
+                "pay_on_pickup"
+                  ? "pickup"
+                  : "delivery"}
+              </p>
+            </div>
+            <div class="flex-shrink-0">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-6 w-6 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
+                />
+              </svg>
+            </div>
+          </div>
         </div>
-      </form>
+      </div>
+
+      <!-- Bank Transfer Details -->
+      {#if paymentMethod === "bank_transfer"}
+        <div transition:slide={{ duration: 300 }} class="mb-6">
+          <div class="p-4 border border-blue-200 rounded-lg bg-blue-50">
+            <h4 class="font-medium text-blue-800 mb-3">
+              Bank Account Information
+            </h4>
+
+            <div class="space-y-4">
+              {#each bankAccounts as account}
+                <div class="p-3 bg-white rounded-lg border border-blue-100">
+                  <h5 class="font-medium text-gray-800">{account.name}</h5>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <span class="text-xs text-gray-500">Account Number</span>
+                      <p class="text-sm font-medium">{account.accountNumber}</p>
+                    </div>
+                    <div>
+                      <span class="text-xs text-gray-500">Account Name</span>
+                      <p class="text-sm font-medium">{account.accountName}</p>
+                    </div>
+                    {#if account.branch}
+                      <div>
+                        <span class="text-xs text-gray-500">Branch</span>
+                        <p class="text-sm font-medium">{account.branch}</p>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+
+            <div class="mt-5">
+              <p class="text-sm text-blue-700 mb-4">
+                Please transfer ETB {safeFormatPrice(
+                  data.orderDetail?.totalCost
+                )} to any of the accounts above and provide the transaction reference
+                below.
+              </p>
+
+              <div class="mb-4">
+                <label
+                  for="transactionRef"
+                  class="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Transaction Reference Number*
+                </label>
+                <input
+                  id="transactionRef"
+                  bind:value={transactionRef}
+                  class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Enter bank transfer reference number"
+                />
+              </div>
+
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                  Upload Payment Receipt (Optional)
+                </label>
+                <div
+                  class="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-lg"
+                >
+                  <div class="space-y-1 text-center">
+                    {#if previewUrl}
+                      <div class="mb-3">
+                        <img
+                          src={previewUrl}
+                          alt="Receipt preview"
+                          class="h-40 w-auto mx-auto object-contain"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        on:click={() => {
+                          previewUrl = null;
+                          uploadedFile = null;
+                        }}
+                        class="text-sm text-red-600 hover:text-red-700"
+                      >
+                        Remove image
+                      </button>
+                    {:else}
+                      <svg
+                        class="mx-auto h-12 w-12 text-gray-400"
+                        stroke="currentColor"
+                        fill="none"
+                        viewBox="0 0 48 48"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                      <div class="flex text-sm text-gray-600">
+                        <label
+                          for="file-upload"
+                          class="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500"
+                        >
+                          <span>Upload a file</span>
+                          <input
+                            id="file-upload"
+                            name="file-upload"
+                            type="file"
+                            class="sr-only"
+                            accept="image/jpeg,image/png"
+                            on:change={handleFileChange}
+                          />
+                        </label>
+                        <p class="pl-1">or drag and drop</p>
+                      </div>
+                      <p class="text-xs text-gray-500">PNG or JPG up to 5MB</p>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Payment verification note -->
+            <div class="mt-4 p-3 bg-white rounded-lg border border-blue-100">
+              <div class="flex items-start">
+                <div class="flex-shrink-0 mt-0.5">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-blue-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <div class="ml-3">
+                  <h5 class="text-sm font-medium text-gray-800">
+                    What happens next?
+                  </h5>
+                  <p class="text-xs text-gray-600 mt-1">
+                    After submitting your bank transfer details, the driver will
+                    verify your payment upon {data.orderDetail
+                      ?.paymentOption === "pay_on_pickup"
+                      ? "pickup"
+                      : "delivery"}. Please show the driver the payment
+                    confirmation or receipt from your bank.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Cash Payment Details -->
+      {#if paymentMethod === "cash"}
+        <div transition:slide={{ duration: 300 }} class="mb-6">
+          <div class="p-4 border border-green-200 rounded-lg bg-green-50">
+            <h4 class="font-medium text-green-800 mb-3">
+              Cash Payment Details
+            </h4>
+            <p class="text-sm text-green-700">
+              You've selected to pay in cash upon {data.orderDetail
+                ?.paymentOption === "pay_on_pickup"
+                ? "pickup"
+                : "delivery"}.
+            </p>
+            <div class="mt-4 p-3 bg-white rounded-lg border border-green-100">
+              <div class="flex items-center">
+                <div class="flex-shrink-0 mr-3">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-6 w-6 text-green-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <h5 class="font-medium text-gray-800">Important Note</h5>
+                  <p class="text-sm text-gray-600 mt-1">
+                    Please have the exact amount of ETB {safeFormatPrice(
+                      data.orderDetail?.totalCost
+                    )} ready when the driver arrives.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Cash payment note -->
+            <div class="mt-4 p-3 bg-white rounded-lg border border-green-100">
+              <div class="flex items-start">
+                <div class="flex-shrink-0 mt-0.5">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-green-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <div class="ml-3">
+                  <h5 class="text-sm font-medium text-gray-800">
+                    What happens next?
+                  </h5>
+                  <p class="text-xs text-gray-600 mt-1">
+                    After confirming cash payment, the driver will collect
+                    payment from you upon {data.orderDetail?.paymentOption ===
+                    "pay_on_pickup"
+                      ? "pickup"
+                      : "delivery"}. Please prepare the exact amount to ensure a
+                    smooth transaction.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Action Buttons -->
+      <div class="mt-8 flex justify-between">
+        <button
+          on:click={() => dispatch("back")}
+          class="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors flex items-center"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-5 w-5 mr-2"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M10 19l-7-7m0 0l7-7m-7 7h18"
+            />
+          </svg>
+          Back to Review
+        </button>
+
+        {#if paymentMethod === "bank_transfer"}
+          <button
+            on:click={handleBankTransferSubmit}
+            disabled={isSubmitting}
+            class="bg-blue-600 text-white font-medium py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {#if isSubmitting}
+              <div
+                class="h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"
+              ></div>
+              Processing...
+            {:else}
+              Submit Bank Transfer
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-5 w-5 ml-2"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M14 5l7 7m0 0l-7 7m7-7H3"
+                />
+              </svg>
+            {/if}
+          </button>
+        {:else if paymentMethod === "cash"}
+          <button
+            on:click={selectCashPayment}
+            class="bg-green-600 text-white font-medium py-3 px-6 rounded-lg hover:bg-green-700 transition-colors flex items-center"
+          >
+            Confirm Cash Payment
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5 ml-2"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M14 5l7 7m0 0l-7 7m7-7H3"
+              />
+            </svg>
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 

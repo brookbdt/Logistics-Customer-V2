@@ -111,7 +111,7 @@ export const load = async (event) => {
   if (orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED || !orderDetail?.paymentStatus) {
     if (orderDetail?.paymentOption === "pay_now" && orderDetail?.paymentStatus) {
       // Allow viewing - don't redirect
-    } else if (orderDetail?.paymentOption === "pay_on_delivery") {
+    } else if (orderDetail?.paymentOption === "pay_on_pickup") {
       // Allow viewing - don't redirect
     } else {
       throw redirect(302, `/finalize-order/${orderDetail?.id}`);

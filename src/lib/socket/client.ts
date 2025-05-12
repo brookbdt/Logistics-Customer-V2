@@ -26,6 +26,13 @@ type Notification = {
     type: string;
 };
 
+// Add socket event logging
+export const socketEvents = writable<Array<{
+    timestamp: Date;
+    event: string;
+    data?: any;
+}>>([]);
+
 // Error handling
 export const socketError = writable<{ message: string, details?: string } | null>(null);
 
@@ -40,6 +47,25 @@ export const unreadNotificationCount = derived(
     notifications,
     ($notifications) => $notifications.filter(n => !n.isRead).length
 );
+
+// Function to log socket events
+export function logSocketEvent(event: string, data?: any) {
+    console.log(`Socket event: ${event}`, data);
+    socketEvents.update(events => {
+        events.push({
+            timestamp: new Date(),
+            event,
+            data
+        });
+
+        // Keep the last 100 events only
+        if (events.length > 100) {
+            events = events.slice(-100);
+        }
+
+        return events;
+    });
+}
 
 // Connection management
 let socketInstance: Socket | null = null;
@@ -137,6 +163,9 @@ export async function initSocket(): Promise<Socket | null> {
             socketError.set(null);
             reconnectAttempts = 0; // Reset reconnect attempts on successful connection
 
+            // Log connection event
+            logSocketEvent('connect');
+
             // Setup message handlers once connected
             setupMessageHandlers(socketInstance!);
         });
@@ -144,6 +173,9 @@ export async function initSocket(): Promise<Socket | null> {
         socketInstance.on('disconnect', (reason) => {
             console.log('Disconnected from socket server:', reason);
             isConnected.set(false);
+
+            // Log disconnect event
+            logSocketEvent('disconnect', { reason });
 
             // If the disconnect was intentional, don't auto-reconnect
             if (reason === 'io client disconnect') {
@@ -177,6 +209,9 @@ export async function initSocket(): Promise<Socket | null> {
                 details: error.message || 'Unknown error'
             });
 
+            // Log connect error event
+            logSocketEvent('connect_error', { message: error.message });
+
             // If this is our last attempt, disable realtime
             if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS - 1) {
                 realtimeDisabled.set(true);
@@ -186,6 +221,7 @@ export async function initSocket(): Promise<Socket | null> {
         // Listen for welcome message
         socketInstance.on('welcome', (data) => {
             console.log('Received welcome message from socket server:', data);
+            logSocketEvent('welcome', data);
         });
 
         // Set up the socket in the store
@@ -202,11 +238,44 @@ export async function initSocket(): Promise<Socket | null> {
 }
 
 /**
- * Subscribe to specific order updates
+ * Subscribe to specific order updates with improved reconnection handling
  */
 export function subscribeToOrder(orderId: number): void {
-    if (!socketInstance) return;
+    if (!socketInstance) {
+        console.warn('Socket not initialized, initializing now...');
+        initSocket().then(socket => {
+            if (socket) {
+                socket.emit('join', `order_${orderId}`);
+                // Also try alternate room formats
+                socket.emit('join', `order-${orderId}`);
+                socket.emit('join', `driver-order-${orderId}`);
+                console.log(`Subscribed to order ${orderId}`);
+
+                // Request any initial data
+                socket.emit('getOrder', { orderId });
+                socket.emit('get_order', { orderId });
+
+                // Also try to get driver data
+                socket.emit('getOrderDriver', { orderId });
+                socket.emit('get_order_driver', { orderId });
+            }
+        });
+        return;
+    }
+
     socketInstance.emit('join', `order_${orderId}`);
+    // Also try alternate room formats
+    socketInstance.emit('join', `order-${orderId}`);
+    socketInstance.emit('join', `driver-order-${orderId}`);
+    console.log(`Subscribed to order ${orderId}`);
+
+    // Request any initial data
+    socketInstance.emit('getOrder', { orderId });
+    socketInstance.emit('get_order', { orderId });
+
+    // Also try to get driver data
+    socketInstance.emit('getOrderDriver', { orderId });
+    socketInstance.emit('get_order_driver', { orderId });
 }
 
 /**
@@ -229,7 +298,7 @@ export function subscribeToWarehouse(warehouseId: number): void {
 }
 
 /**
- * Update driver location
+ * Update a driver's location
  */
 export function updateDriverLocation(data: {
     orderId: number,
@@ -238,12 +307,22 @@ export function updateDriverLocation(data: {
     location: string
 }): void {
     if (!socketInstance) return;
+
+    console.log('Updating driver location:', data);
+
+    // Send in the admin app format
     socketInstance.emit('updateDriverLocation', {
         ...data,
-        timestamp: new Date()
+        timestamp: new Date().toISOString()
+    });
+
+    // Also send in the driver app format for backwards compatibility
+    socketInstance.emit('driver:location', {
+        userId: data.driverId.toString(),
+        coordinates: data.location,
+        timestamp: new Date().toISOString()
     });
 }
-
 /**
  * Update order status
  */
@@ -287,9 +366,25 @@ export function markNotificationAsRead(notificationId: number): void {
 }
 
 /**
- * Set up message handlers
+ * Set up message handlers with event logging
  */
 function setupMessageHandlers(socket: Socket): void {
+    // Add event logging to all socket events
+    const events = ['error', 'orderCreated', 'orderStatusUpdated', 'activeOrdersData',
+        'warehouseOrdersData', 'locationUpdated', 'driverStatusUpdated',
+        'newNotification', 'customerNotifications'];
+
+    events.forEach(eventName => {
+        const originalListener = socket.listeners(eventName)[0];
+        if (originalListener) {
+            socket.off(eventName, originalListener);
+            socket.on(eventName, (data: any) => {
+                logSocketEvent(eventName, data);
+                originalListener(data);
+            });
+        }
+    });
+
     // Handle error messages
     socket.on('error', (data: { message: string, details?: string }) => {
         console.error('Socket error:', data);

@@ -1,18 +1,29 @@
 <script lang="ts">
   import { page } from "$app/stores";
-  import GoogleMaps from "$lib/components/google-maps.svelte";
+  import DriverLocationMap from "$lib/components/driver-location.map.svelte";
   import StarRating from "$lib/components/star-rating.svelte";
   import { clickOutside } from "$lib/utils/click-outside.js";
   import { toast } from "@zerodevx/svelte-toast";
   import dayjs from "dayjs";
   import { fly, fade, scale } from "svelte/transition";
   import { quintOut, elasticOut } from "svelte/easing";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   // import Barcode from "svelte-barcode";
   import { superForm } from "sveltekit-superforms/client";
   import { enhance } from "$app/forms";
   import type { Order_orderStatus } from "@prisma/client";
-  import { subscribeToOrder } from "$lib/socket/client.js";
+  import {
+    subscribeToOrder,
+    initSocket,
+    isConnected,
+  } from "$lib/socket/client.js";
+  import {
+    initDriverTracking,
+    trackOrderDriver,
+    driverLocations,
+    onlineDrivers,
+  } from "$lib/socket/driver-tracking";
+  import { browser } from "$app/environment";
 
   export let data;
   export let form;
@@ -22,6 +33,10 @@
     data.orderDetail?.dropOffMapLocation.split(",") || [];
   let [deliveryLat, deliveryLng] =
     data.orderDetail?.Tracker?.mapLocation.split(",") || [];
+
+  // Driver tracking state
+  let driverCoordinates: string | null = null;
+  let driverIsOnline = false;
 
   let orderRateModal = false;
   let driverRateModal = false;
@@ -53,6 +68,16 @@
   // Determine if this is a pay on delivery order
   $: isPayOnDelivery = paymentOption === "pay_on_delivery";
 
+  // Determine if order is in transit or assigned
+  $: isOrderInTransit =
+    data.orderDetail?.orderStatus === ORDER_STATUS.IN_TRANSIT;
+  $: isOrderAssigned = data.orderDetail?.orderStatus === ORDER_STATUS.ASSIGNED;
+
+  // Get assigned driver info
+  $: assignedDriver =
+    data.orderDetail?.Dispatch?.AssignedEmployee?.User ||
+    data.orderDetail?.Dispatch?.AssignedVendorDriver?.User;
+
   let showCancellationModal = false;
   let cancellationReason = "";
   let isSubmittingCancellation = false;
@@ -72,6 +97,22 @@
   function closeCancellationModal() {
     showCancellationModal = false;
     cancellationReason = "";
+  }
+
+  // Get driver coordinates from the driver tracking system
+  $: {
+    if (assignedDriver && data.orderDetail?.id) {
+      const driverId = assignedDriver.id.toString();
+      const driverData = $driverLocations[driverId];
+      const driverOnlineStatus = $onlineDrivers[driverId];
+
+      if (driverData?.coordinates) {
+        driverCoordinates = driverData.coordinates;
+        console.log(`Driver location updated: ${driverCoordinates}`);
+      }
+
+      driverIsOnline = driverOnlineStatus?.isOnline || false;
+    }
   }
 
   // Helper function to get order status label with color
@@ -258,10 +299,80 @@
     );
   }
 
+  // Add tracking variables and setup polling mechanism
+  let driverLocationPolling: ReturnType<typeof setInterval> | null = null;
+  let socketInitialized = false;
+
+  // Update onMount function to properly initialize tracking
   onMount(() => {
     // Additional setup can be done here
     pageLoaded = true;
-    subscribeToOrder(data.orderDetail?.id);
+
+    if (browser && data.orderDetail?.id && !socketInitialized) {
+      socketInitialized = true;
+      console.log(`Initializing socket for order: ${data.orderDetail.id}`);
+
+      // Initialize socket connection first
+      initSocket()
+        .then(() => {
+          // Initialize driver tracking
+          initDriverTracking();
+
+          // Subscribe to this specific order for updates
+          subscribeToOrder(data.orderDetail?.id);
+
+          // Start tracking the driver for this order
+          trackOrderDriver(data.orderDetail.id);
+
+          // Setup fallback polling for driver location
+          setupDriverPolling();
+
+          toast.push("Live driver tracking activated", {
+            duration: 3000,
+            theme: {
+              "--toastBackground": "#3B82F6",
+              "--toastColor": "white",
+            },
+          });
+        })
+        .catch((error) => {
+          console.error("Socket initialization failed:", error);
+          // Still setup fallback polling if socket fails
+          setupDriverPolling();
+
+          toast.push("Using fallback location updates", {
+            duration: 3000,
+            theme: {
+              "--toastBackground": "#F97316",
+              "--toastColor": "white",
+            },
+          });
+        });
+    }
+  });
+
+  // Add a function to set up polling as fallback for sockets
+  function setupDriverPolling() {
+    // Clear any existing polling
+    if (driverLocationPolling) {
+      clearInterval(driverLocationPolling);
+    }
+
+    // Poll for driver updates every 10 seconds as a fallback for socket
+    driverLocationPolling = setInterval(() => {
+      if (assignedDriver && data.orderDetail?.id) {
+        console.log("Polling for driver location...");
+        trackOrderDriver(data.orderDetail.id);
+      }
+    }, 10000);
+  }
+
+  // Add onDestroy to clean up timers and event listeners
+  onDestroy(() => {
+    // Clear driver location polling
+    if (driverLocationPolling) {
+      clearInterval(driverLocationPolling);
+    }
   });
 
   $: form?.createOrderRating
@@ -1178,16 +1289,19 @@
         <div
           class="bg-white p-2 rounded-lg m-4 shadow-inner overflow-hidden h-[300px]"
         >
-          {#key [mapLat, mapLng, destinationLat, destinationLng, deliveryLat, deliveryLng]}
-            <GoogleMaps
-              display={true}
-              destinationLat={Number(destinationLat)}
-              destinationLng={Number(destinationLng)}
-              lng={Number(mapLng)}
-              lat={Number(mapLat)}
-              deliveryLat={Number(deliveryLat)}
-              deliveryLng={Number(deliveryLng)}
-              showRoute={true}
+          <!-- Replace Google Maps with DriverLocationMap component -->
+          {#key [data.orderDetail?.id, driverCoordinates]}
+            <DriverLocationMap
+              order={{
+                id: data.orderDetail?.id || null,
+                pickUpMapLocation: data.orderDetail?.pickUpMapLocation || null,
+                dropOffMapLocation:
+                  data.orderDetail?.dropOffMapLocation || null,
+              }}
+              driverLocation={data.orderDetail?.Tracker?.mapLocation ||
+                driverCoordinates}
+              {driverIsOnline}
+              driverName={assignedDriver?.userName || "Driver"}
             />
           {/key}
         </div>
@@ -1234,6 +1348,24 @@
               </p>
             </div>
           </div>
+
+          <!-- Add map legend/info section -->
+          {#if isOrderInTransit || isOrderAssigned}
+            <div class="my-2 flex justify-between text-xs text-gray-600 px-2">
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-yellow-400 rounded-full mr-1.5"></div>
+                <span>Driver Location</span>
+              </div>
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-green-500 rounded-full mr-1.5"></div>
+                <span>Pickup Point</span>
+              </div>
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-red-500 rounded-full mr-1.5"></div>
+                <span>Delivery Point</span>
+              </div>
+            </div>
+          {/if}
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div class="space-y-1">
@@ -2066,3 +2198,49 @@
     </div>
   </div>
 {/if}
+
+<!-- Add a refresh button and connection status -->
+<div class="flex items-center justify-between mt-2 px-2 text-xs">
+  <div class="flex items-center">
+    <span
+      class="w-2 h-2 rounded-full {$isConnected
+        ? 'bg-green-500 animate-pulse'
+        : 'bg-gray-400'} mr-1"
+    ></span>
+    <span class={$isConnected ? "text-green-600" : "text-gray-500"}>
+      {$isConnected ? "Live Tracking" : "Offline"}
+    </span>
+  </div>
+
+  <button
+    on:click={() => {
+      if (data.orderDetail?.id) {
+        trackOrderDriver(data.orderDetail.id);
+        toast.push("Refreshing driver location...", {
+          duration: 2000,
+          theme: {
+            "--toastBackground": "#3B82F6",
+            "--toastColor": "white",
+          },
+        });
+      }
+    }}
+    class="px-2 py-1 bg-blue-100 text-blue-800 rounded-md hover:bg-blue-200 transition flex items-center"
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      class="h-3 w-3 mr-1"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+      />
+    </svg>
+    Refresh
+  </button>
+</div>

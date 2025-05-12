@@ -17,7 +17,21 @@
   // Import our new components
   import OrderAcceptedAnimation from "$lib/components/order-accepted-animation.svelte";
   // Import socket functionality for realtime updates
-  import { subscribeToOrder } from "$lib/socket/client";
+  import {
+    initSocket,
+    subscribeToOrder,
+    isConnected,
+  } from "$lib/socket/client";
+  // Import driver tracking
+  import {
+    initDriverTracking,
+    trackOrderDriver,
+    driverLocations,
+    onlineDrivers,
+    activeDrivers,
+  } from "$lib/socket/driver-tracking";
+
+  import DriverLocationMap from "$lib/components/driver-location.map.svelte";
   //lol
   dayjs.extend(relativeTime);
 
@@ -46,6 +60,11 @@
   let showTips = false;
   let currentTip = 0;
   let tipInterval: ReturnType<typeof setInterval>;
+  // Driver tracking state
+  let driverCoordinates: string | null = null;
+  let driverIsOnline = false;
+  let socketInitialized = false;
+  let driverLocationPolling: ReturnType<typeof setInterval> | null = null;
 
   const deliveryTips = [
     "Premium customers get priority processing and exclusive discounts!",
@@ -60,20 +79,49 @@
 
   // Payment options handling
   $: isOrderAccepted = data.orderDetail?.orderStatus === "ACCEPTED";
+  $: isOrderAssigned = data.orderDetail?.orderStatus === "ASSIGNED";
+  $: isOrderInTransit = data.orderDetail?.orderStatus === "IN_TRANSIT";
+
+  // Payment options - updated to match schema requirements
   $: canProceedToPayment =
-    (isOrderAccepted &&
-      !data.orderDetail?.paymentStatus &&
-      (data.orderDetail?.paymentOption === "pay_now" ||
-        data.orderDetail?.paymentOption === "pay_on_acceptance")) ||
+    // Pay on pickup - unlocked when order is assigned (driver is on the way)
+    (data.orderDetail?.paymentOption === "pay_on_pickup" &&
+      (isOrderAssigned || isOrderInTransit) &&
+      !data.orderDetail?.paymentStatus) ||
+    // Pay now option - always available if not paid
     (data.orderDetail?.paymentOption === "pay_now" &&
       !data.orderDetail?.paymentStatus);
-  $: showPaymentComponent =
-    canProceedToPayment ||
-    (data.orderDetail?.paymentOption === "pay_now" &&
-      !data.orderDetail?.paymentStatus) ||
-    componentsOrder === 5;
 
-  $: estimatedPrice = data.orderDetail?.totalCost || 0;
+  // Get assigned driver info
+  $: assignedDriver =
+    data.orderDetail?.Dispatch?.AssignedEmployee?.User ||
+    data.orderDetail?.Dispatch?.AssignedVendorDriver?.User;
+
+  // Latest order dispatch with ASSIGNED or INPROGRESS status
+  $: activeOrderDispatch = data.orderDetail?.OrderDispatch?.find((dispatch) =>
+    ["ASSIGNED", "INPROGRESS"].includes(dispatch.dispatchStatus)
+  );
+
+  // Function to get driver info from order dispatches
+  function getDriverInfo() {
+    if (assignedDriver) {
+      return {
+        name: assignedDriver.userName || "Driver",
+        phone: assignedDriver.phoneNumber || "N/A",
+        vehicle: data.orderDetail?.vehicleType || "CAR",
+      };
+    }
+    return null;
+  }
+
+  // Function to check if order has a milestone with specific description
+  function hasOrderMilestone(description: string): boolean {
+    return (
+      data.orderDetail?.orderMilestone?.some((milestone) =>
+        milestone.description.includes(description)
+      ) || false
+    );
+  }
 
   // Function to handle proceeding to payment
   function handleProceedToPayment() {
@@ -81,11 +129,21 @@
       componentsOrder = 5;
     } else {
       // Show a toast notification explaining why they can't proceed
-      toast.push(
-        isOrderAccepted
-          ? "This order has already been paid for."
-          : "Please wait for the warehouse to accept your order before proceeding to payment."
-      );
+      let message = "Payment is not available at this time.";
+
+      if (data.orderDetail?.paymentStatus) {
+        message = "This order has already been paid for.";
+      } else if (data.orderDetail?.paymentOption === "pay_on_delivery") {
+        message = "This order is set to be paid upon delivery.";
+      } else if (
+        data.orderDetail?.paymentOption === "pay_on_pickup" &&
+        !isOrderAssigned
+      ) {
+        message =
+          "Please wait for a driver to be assigned before proceeding to payment.";
+      }
+
+      toast.push(message);
     }
   }
 
@@ -98,9 +156,12 @@
   $: if (
     data.orderDetail?.paymentOption === "pay_now" &&
     !data.orderDetail?.paymentStatus &&
-    componentsOrder !== 5
+    componentsOrder === 4
   ) {
-    componentsOrder = 5; // Show payment component
+    // Add a small delay so this doesn't run immediately
+    setTimeout(() => {
+      componentsOrder = 5; // Show payment component
+    }, 1000);
   }
 
   let previousOrderStatus = data.orderDetail?.orderStatus;
@@ -212,21 +273,32 @@
     // Setup polling for order status - this is our primary update mechanism
     pollOrderStatus();
 
-    // Attempt to subscribe to realtime order updates via socket as an enhancement
-    // This is not critical and will gracefully fail if socket server is unavailable
-    if (data.orderDetail?.id) {
-      try {
-        console.log(
-          `Attempting to subscribe to realtime updates for order: ${data.orderDetail.id}`
-        );
-        subscribeToOrder(data.orderDetail.id);
-      } catch (error) {
-        console.log(
-          "Could not subscribe to socket updates, falling back to polling:",
-          error
-        );
-        // Continue with polling only, no need to handle the error
-      }
+    // Initialize socket connection for real-time updates
+    if (browser && data.orderDetail?.id && !socketInitialized) {
+      socketInitialized = true;
+      console.log(`Initializing socket for order: ${data.orderDetail.id}`);
+
+      // Initialize socket connection
+      initSocket()
+        .then(() => {
+          // Initialize driver tracking
+          initDriverTracking();
+
+          // Subscribe to this specific order
+          if (data.orderDetail?.id) {
+            console.log(`Subscribing to order: ${data.orderDetail.id}`);
+            subscribeToOrder(data.orderDetail.id);
+            trackOrderDriver(data.orderDetail.id);
+
+            // Setup fallback polling
+            setupDriverPolling();
+          }
+        })
+        .catch((error) => {
+          console.error("Socket initialization failed:", error);
+          // Still setup fallback polling if socket fails
+          setupDriverPolling();
+        });
     }
   });
 
@@ -240,6 +312,11 @@
     if (tipInterval) {
       clearInterval(tipInterval);
     }
+
+    // Clear driver location polling
+    if (driverLocationPolling) {
+      clearInterval(driverLocationPolling);
+    }
   });
 
   // Extract coordinates from mapLocation strings
@@ -249,30 +326,20 @@
   if (data.orderDetail?.pickUpMapLocation) {
     const coords = data.orderDetail.pickUpMapLocation.split(",").map(Number);
     if (coords.length === 2) {
-      // The format might be lng,lat or lat,lng - we need to determine which
-      if (Math.abs(coords[0]) <= 90 && Math.abs(coords[1]) <= 180) {
-        // Likely lat,lng format
-        pickupCoordinates = { lat: coords[1], lng: coords[0] };
-      } else if (Math.abs(coords[1]) <= 90 && Math.abs(coords[0]) <= 180) {
-        // Likely lng,lat format
-        pickupCoordinates = { lat: coords[1], lng: coords[0] };
-      }
+      pickupCoordinates = { lat: coords[0], lng: coords[1] };
     }
   }
 
   if (data.orderDetail?.dropOffMapLocation) {
     const coords = data.orderDetail.dropOffMapLocation.split(",").map(Number);
     if (coords.length === 2) {
-      // The format might be lng,lat or lat,lng - we need to determine which
-      if (Math.abs(coords[0]) <= 90 && Math.abs(coords[1]) <= 180) {
-        // Likely lat,lng format
-        dropoffCoordinates = { lat: coords[0], lng: coords[1] };
-      } else if (Math.abs(coords[1]) <= 90 && Math.abs(coords[0]) <= 180) {
-        // Likely lng,lat format
-        dropoffCoordinates = { lat: coords[1], lng: coords[0] };
-      }
+      dropoffCoordinates = { lat: coords[0], lng: coords[1] };
     }
   }
+
+  // For debugging
+  console.log("Pickup coordinates:", pickupCoordinates);
+  console.log("Dropoff coordinates:", dropoffCoordinates);
 
   // Order details directly from orderDetail
   let packageType: PackageType | null = data.orderDetail?.packageType ?? null;
@@ -391,6 +458,71 @@
       console.error("Error getting vehicle multiplier:", error);
     }
     return 1.0; // Default multiplier if not found in config
+  }
+
+  // Function to handle route calculation events from GoogleMaps component
+  function handleRouteCalculated(
+    event: CustomEvent<{ distance: number; duration: number }>
+  ) {
+    const details = event.detail;
+
+    // Only update if orderDetail doesn't already have these values and orderDetail exists
+    if (data.orderDetail) {
+      if (!data.orderDetail.distanceInKm && details.distance) {
+        console.log(
+          "Updating distance from route calculation:",
+          details.distance
+        );
+        data.orderDetail.distanceInKm = details.distance;
+      }
+
+      if (!data.orderDetail.estimatedTimeInMinutes && details.duration) {
+        console.log("Updating time from route calculation:", details.duration);
+        data.orderDetail.estimatedTimeInMinutes = details.duration;
+      }
+    }
+  }
+
+  // Get driver coordinates from the driver tracking system
+  $: {
+    if (assignedDriver && data.orderDetail?.id) {
+      const driverId = assignedDriver.id.toString();
+      const driverData = $driverLocations[driverId];
+      const driverOnlineStatus = $onlineDrivers[driverId];
+
+      if (driverData?.coordinates) {
+        driverCoordinates = driverData.coordinates;
+        console.log(`Driver location updated: ${driverCoordinates}`);
+      }
+
+      driverIsOnline = driverOnlineStatus?.isOnline || false;
+    }
+  }
+
+  // Socket connection status for debugging
+  $: if (assignedDriver) {
+    console.log(
+      "Socket connected:",
+      $isConnected,
+      "Driver online:",
+      driverIsOnline
+    );
+  }
+
+  // Setup periodic driver data refresh as a fallback
+  function setupDriverPolling() {
+    // Clear any existing polling
+    if (driverLocationPolling) {
+      clearInterval(driverLocationPolling);
+    }
+
+    // Poll for driver updates every 10 seconds as a fallback for socket
+    driverLocationPolling = setInterval(() => {
+      if (assignedDriver && data.orderDetail?.id) {
+        console.log("Polling for driver location...");
+        trackOrderDriver(data.orderDetail.id);
+      }
+    }, 10000);
   }
 </script>
 
@@ -581,10 +713,18 @@
                 >
                   {#if pickupCoordinates.lat && pickupCoordinates.lng}
                     <GoogleMaps
-                      lat={pickupCoordinates.lat}
-                      lng={pickupCoordinates.lng}
-                      display={false}
+                      lat={dropoffCoordinates.lat}
+                      lng={dropoffCoordinates.lng}
+                      destinationLat={pickupCoordinates.lat}
+                      destinationLng={pickupCoordinates.lng}
+                      display={true}
                       showSearchBox={false}
+                      showRoute={dropoffCoordinates.lat &&
+                      dropoffCoordinates.lng
+                        ? true
+                        : false}
+                      mapId="pickupMap"
+                      on:routeCalculated={handleRouteCalculated}
                     />
                     <!-- Add a legend below the map -->
                     <div class="flex items-center mt-2 text-xs text-gray-600">
@@ -594,6 +734,19 @@
                           ?.pickUpPhysicalLocation || ""}</span
                       >
                     </div>
+                    {#if dropoffCoordinates.lat && dropoffCoordinates.lng}
+                      <div class="flex items-center mt-1 text-xs text-gray-600">
+                        <img
+                          src={dropOffIcon}
+                          alt="Delivery"
+                          class="w-4 h-4 mr-1"
+                        />
+                        <span
+                          >Delivery Location: {data.orderDetail
+                            ?.dropOffPhysicalLocation || ""}</span
+                        >
+                      </div>
+                    {/if}
                   {:else}
                     <div
                       class="h-full flex items-center justify-center bg-gray-100"
@@ -733,8 +886,15 @@
                     <GoogleMaps
                       lat={dropoffCoordinates.lat}
                       lng={dropoffCoordinates.lng}
-                      display={false}
+                      destinationLat={pickupCoordinates.lat}
+                      destinationLng={pickupCoordinates.lng}
+                      display={true}
                       showSearchBox={false}
+                      showRoute={pickupCoordinates.lat && pickupCoordinates.lng
+                        ? true
+                        : false}
+                      mapId="dropoffMap"
+                      on:routeCalculated={handleRouteCalculated}
                     />
                     <!-- Add a legend below the map -->
                     <div class="flex items-center mt-2 text-xs text-gray-600">
@@ -748,6 +908,19 @@
                           ?.dropOffPhysicalLocation || ""}</span
                       >
                     </div>
+                    {#if pickupCoordinates.lat && pickupCoordinates.lng}
+                      <div class="flex items-center mt-1 text-xs text-gray-600">
+                        <img
+                          src={pickUpIcon}
+                          alt="Pickup"
+                          class="w-4 h-4 mr-1"
+                        />
+                        <span
+                          >Pickup Location: {data.orderDetail
+                            ?.pickUpPhysicalLocation || ""}</span
+                        >
+                      </div>
+                    {/if}
                   {:else}
                     <div
                       class="h-full flex items-center justify-center bg-gray-100"
@@ -1290,7 +1463,7 @@
         <!-- ... existing code ... -->
 
         <!-- Order Processing Animation - Only show when waiting for acceptance -->
-        {#if !isOrderAccepted}
+        {#if !isOrderAccepted && !isOrderAssigned && !isOrderInTransit}
           <div class="bg-white rounded-xl shadow-md overflow-hidden mb-6">
             <div class="p-5">
               <div class="flex items-center justify-between mb-4">
@@ -1397,57 +1570,48 @@
         {/if}
 
         <!-- Order Accepted Message - Show when order is accepted -->
-        {#if isOrderAccepted && !data.orderDetail?.paymentStatus}
+        {#if isOrderAccepted && !isOrderAssigned && !isOrderInTransit && !data.orderDetail?.paymentStatus && componentsOrder === 4}
           <div
             class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl shadow-lg overflow-hidden mb-6"
             in:fly={{ y: 20, duration: 500 }}
           >
-            <div class="p-4 sm:p-5">
-              <div class="flex items-start">
-                <div
-                  class="flex-shrink-0 w-10 h-10 sm:w-12 sm:h-12 bg-green-100 rounded-full flex items-center justify-center mr-3 sm:mr-4 animate-bounce"
+            <div class="p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-green-800">
+                  <span class="mr-2">✅</span>
+                  Order Accepted
+                </h3>
+                <span
+                  class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-200 text-green-800"
                 >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-6 w-6 sm:h-7 sm:w-7 text-green-600"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <h3 class="text-lg sm:text-xl font-bold text-green-800">
-                    Order Accepted! 🎉
-                  </h3>
-                  <p class="text-sm text-green-700 mt-1">
-                    Great news! Your order has been accepted by our warehouse
-                    team and is {data.orderDetail?.paymentOption ===
-                      "pay_now" ||
-                    data.orderDetail?.paymentOption === "pay_on_acceptance"
-                      ? "ready for payment"
-                      : "being processed"}.
-                  </p>
-                </div>
+                  <span
+                    class="w-2 h-2 bg-green-500 rounded-full mr-1.5 animate-pulse"
+                  ></span>
+                  Warehouse Processing
+                </span>
               </div>
 
-              <!-- Benefits Section -->
+              <p class="text-sm text-green-700 mb-4">
+                Great news! Your order has been accepted by our warehouse team
+                and is being prepared.
+                {#if data.orderDetail?.paymentOption === "pay_now" || data.orderDetail?.paymentOption === "pay_on_acceptance"}
+                  Please complete your payment to proceed with delivery.
+                {:else}
+                  We're working on assigning a driver to your order.
+                {/if}
+              </p>
+
+              <!-- Order flow visualization -->
               <div
-                class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3 sm:grid-cols-2 sm:gap-5"
+                class="flex items-center justify-between mb-6 p-3 bg-white rounded-lg"
               >
-                <div
-                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
-                >
-                  <div class="bg-green-100 p-3 rounded-full mb-3">
+                <div class="flex flex-col items-center">
+                  <div
+                    class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white"
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-6 w-6 text-green-600"
+                      class="h-5 w-5"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -1456,50 +1620,27 @@
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         stroke-width="2"
-                        d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                        d="M5 13l4 4L19 7"
                       />
                     </svg>
                   </div>
-                  <p class="font-medium text-gray-800 text-sm sm:text-base">
-                    Secure Payment
-                  </p>
-                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
-                    100% secure transaction
-                  </p>
+                  <span class="text-xs text-green-800 font-medium mt-1"
+                    >Accepted</span
+                  >
                 </div>
-                <div
-                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
-                >
-                  <div class="bg-green-100 p-3 rounded-full mb-3">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="h-6 w-6 text-green-600"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                      />
-                    </svg>
-                  </div>
-                  <p class="font-medium text-gray-800 text-sm sm:text-base">
-                    Priority Delivery
-                  </p>
-                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
-                    Pay now, ship first
-                  </p>
+                <div class="flex-1 mx-1 h-1 bg-gray-200 relative">
+                  <div
+                    class="absolute inset-0 bg-green-500"
+                    style="width: 0%"
+                  ></div>
                 </div>
-                <div
-                  class="bg-white p-5 rounded-lg shadow-sm flex flex-col items-center text-center"
-                >
-                  <div class="bg-green-100 p-3 rounded-full mb-3">
+                <div class="flex flex-col items-center">
+                  <div
+                    class="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-400"
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      class="h-6 w-6 text-green-600"
+                      class="h-5 w-5"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -1508,22 +1649,43 @@
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         stroke-width="2"
-                        d="M13 10V3L4 14h7v7l9-11h-7z"
+                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
                       />
                     </svg>
                   </div>
-                  <p class="font-medium text-gray-800 text-sm sm:text-base">
-                    Instant Processing
-                  </p>
-                  <p class="text-gray-500 text-xs sm:text-sm mt-1 w-full">
-                    No delays, immediate handling
-                  </p>
+                  <span class="text-xs text-gray-500 font-medium mt-1"
+                    >Driver Assigned</span
+                  >
+                </div>
+                <div class="flex-1 mx-1 h-1 bg-gray-200"></div>
+                <div class="flex flex-col items-center">
+                  <div
+                    class="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-400"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-5 w-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M17 8l4 4m0 0l-4 4m4-4H3"
+                      />
+                    </svg>
+                  </div>
+                  <span class="text-xs text-gray-500 font-medium mt-1"
+                    >In Transit</span
+                  >
                 </div>
               </div>
 
-              <!-- CTA Button -->
+              <!-- CTA Button for payment if needed -->
               {#if data.orderDetail?.paymentOption === "pay_now" || data.orderDetail?.paymentOption === "pay_on_acceptance"}
-                <div class="mt-5 flex justify-center">
+                <div class="mt-4 flex justify-center">
                   <button
                     on:click={handleProceedToPayment}
                     class="w-full sm:w-auto bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 transform hover:translate-y-[-2px] transition-all duration-200"
@@ -1639,30 +1801,35 @@
               <!-- Map with Route -->
               {#if pickupCoordinates.lat && pickupCoordinates.lng && dropoffCoordinates.lat && dropoffCoordinates.lng}
                 <div class="mb-6">
-                  <h4 class="font-medium text-gray-700 mb-2">Delivery Route</h4>
+                  <h4 class="font-medium text-gray-700 mb-2">
+                    Delivery Route Map
+                  </h4>
                   <div
-                    class="h-48 sm:h-64 rounded-lg overflow-hidden border border-gray-200"
+                    class="h-64 sm:h-80 rounded-lg overflow-hidden border border-gray-200 shadow-sm"
                   >
                     <GoogleMaps
-                      lat={pickupCoordinates.lat}
-                      lng={pickupCoordinates.lng}
-                      destinationLat={dropoffCoordinates.lat}
-                      destinationLng={dropoffCoordinates.lng}
+                      lat={dropoffCoordinates.lat}
+                      lng={dropoffCoordinates.lng}
+                      destinationLat={pickupCoordinates.lat}
+                      destinationLng={pickupCoordinates.lng}
                       display={true}
                       showSearchBox={false}
                       showRoute={true}
+                      mapId="summaryMap"
+                      on:routeCalculated={handleRouteCalculated}
                     />
                   </div>
                   <!-- Route legend -->
-                  <div class="flex justify-between mt-2 text-xs text-gray-600">
+                  <div
+                    class="flex justify-between mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-200"
+                  >
                     <div class="flex items-center">
-                      <img
-                        src={pickUpIcon}
-                        alt="Pickup"
-                        class="w-3 h-3 sm:w-4 sm:h-4 mr-1"
-                      />
-                      <span class="text-xs"
+                      <img src={pickUpIcon} alt="Pickup" class="w-4 h-4 mr-1" />
+                      <span class="text-xs font-medium"
                         >{data.orderDetail?.originCity || "Pickup"}</span
+                      >
+                      <span class="ml-1 text-xs text-gray-500"
+                        >{data.orderDetail?.pickUpPhysicalLocation || ""}</span
                       >
                     </div>
                     <div
@@ -1672,22 +1839,25 @@
                       <img
                         src={dropOffIcon}
                         alt="Delivery"
-                        class="w-3 h-3 sm:w-4 sm:h-4 mr-1"
+                        class="w-4 h-4 mr-1"
                       />
-                      <span class="text-xs"
+                      <span class="text-xs font-medium"
                         >{data.orderDetail?.destinationCity || "Delivery"}</span
+                      >
+                      <span class="ml-1 text-xs text-gray-500"
+                        >{data.orderDetail?.dropOffPhysicalLocation || ""}</span
                       >
                     </div>
                   </div>
                   <!-- Distance and time if available -->
                   {#if data.orderDetail?.distanceInKm || data.orderDetail?.estimatedTimeInMinutes}
                     <div
-                      class="flex justify-between mt-2 text-xs text-gray-600"
+                      class="flex justify-between mt-2 text-xs sm:text-sm text-gray-700 bg-blue-50 p-3 rounded-lg border border-blue-100"
                     >
                       <div class="flex items-center">
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
-                          class="h-3 w-3 sm:h-4 sm:w-4 mr-1 text-gray-500"
+                          class="h-4 w-4 sm:h-5 sm:w-5 mr-2 text-blue-600"
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -1699,16 +1869,16 @@
                             d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
                           />
                         </svg>
-                        <span
-                          >{data.orderDetail?.distanceInKm
+                        <span class="font-medium">
+                          {data.orderDetail?.distanceInKm
                             ? `${data.orderDetail.distanceInKm.toFixed(1)} km`
-                            : "Distance N/A"}</span
-                        >
+                            : "Distance N/A"}
+                        </span>
                       </div>
                       <div class="flex items-center">
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
-                          class="h-4 w-4 mr-1 text-gray-500"
+                          class="h-4 w-4 sm:h-5 sm:w-5 mr-2 text-blue-600"
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -1720,11 +1890,17 @@
                             d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
                           />
                         </svg>
-                        <span
-                          >{data.orderDetail?.estimatedTimeInMinutes
-                            ? `${data.orderDetail.estimatedTimeInMinutes} min`
-                            : "Time N/A"}</span
-                        >
+                        <span class="font-medium">
+                          {data.orderDetail?.estimatedTimeInMinutes
+                            ? `${
+                                Math.floor(
+                                  data.orderDetail.estimatedTimeInMinutes / 60
+                                ) > 0
+                                  ? `${Math.floor(data.orderDetail.estimatedTimeInMinutes / 60)}h ${data.orderDetail.estimatedTimeInMinutes % 60}m`
+                                  : `${data.orderDetail.estimatedTimeInMinutes}m`
+                              }`
+                            : "Time N/A"}
+                        </span>
                       </div>
                     </div>
                   {/if}
@@ -2006,119 +2182,85 @@
                   />
                 </svg>
                 <span
-                  >You've selected to pay on delivery. No payment is required
-                  now.</span
+                  >You've selected to pay on delivery. Have the exact amount
+                  ready when the driver arrives.</span
                 >
               </div>
             </div>
           {:else if data.orderDetail?.paymentOption === "pay_on_pickup"}
             <!-- Pay on pickup option -->
             <div class="flex flex-col items-center">
-              <div
-                class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span
-                  >You've selected to pay on pickup. No payment is required now.</span
-                >
-              </div>
-            </div>
-          {:else if data.orderDetail?.paymentOption === "pay_on_acceptance" && isOrderAccepted && !data.orderDetail?.paymentStatus}
-            <!-- Pay on acceptance and order is accepted -->
-            <div class="space-y-3 w-full max-w-md mx-auto">
-              <div class="text-center text-sm text-gray-600 mb-2">
-                <span
-                  class="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse mr-1"
-                ></span>
-                <span>Your order is accepted. Please complete payment now.</span
-                >
-              </div>
+              {#if isOrderAssigned || isOrderInTransit}
+                <!-- If driver is assigned, show pay now button -->
+                <div class="space-y-3 w-full max-w-md mx-auto">
+                  <div
+                    class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-5 w-5 text-blue-600"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    <span
+                      >Driver is on the way! Complete payment now for a smooth
+                      pickup.</span
+                    >
+                  </div>
 
-              <button
-                on:click={() => (componentsOrder = 5)}
-                class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white text-sm sm:text-base font-medium py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-4 w-4 sm:h-5 sm:w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
+                  <button
+                    on:click={() => (componentsOrder = 5)}
+                    class="w-full bg-gradient-to-r from-blue-500 to-blue-700 text-white text-sm sm:text-base font-medium py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="h-4 w-4 sm:h-5 sm:w-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
+                      />
+                    </svg>
+                    Pay for Pickup Now
+                  </button>
+                </div>
+              {:else}
+                <div
+                  class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
-                  />
-                </svg>
-                Complete Payment Now
-              </button>
-            </div>
-          {:else if !isOrderAccepted && data.orderDetail?.paymentOption === "pay_on_acceptance"}
-            <!-- Pay on acceptance but order not yet accepted -->
-            <div class="flex flex-col items-center">
-              <div
-                class="bg-blue-100 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-2 max-w-md"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span
-                  >You've selected to pay after order acceptance. Please wait
-                  for confirmation.</span
-                >
-              </div>
-            </div>
-          {:else if !isOrderAccepted}
-            <div class="flex flex-col items-center">
-              <button
-                disabled
-                class="w-full sm:w-auto bg-gray-300 text-gray-600 font-bold py-3 px-8 rounded-lg flex items-center justify-center gap-2 cursor-not-allowed"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  class="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                Waiting for Acceptance
-              </button>
-              <p class="text-sm text-gray-500 mt-2">
-                You can proceed once your order has been accepted
-              </p>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span
+                    >You've selected to pay on pickup. Payment will be available
+                    once a driver is assigned.</span
+                  >
+                </div>
+              {/if}
             </div>
           {:else if data.orderDetail?.paymentStatus}
             <div
@@ -2229,6 +2371,576 @@
           {/if}
         </p>
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Order Assigned Information - Show when order is assigned to a driver -->
+{#if (isOrderAssigned || isOrderInTransit) && assignedDriver && componentsOrder === 4}
+  <div
+    in:fade={{ duration: 300 }}
+    class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl shadow-lg overflow-hidden mb-6"
+  >
+    <div class="p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-blue-800">
+          <span class="mr-2">🚚</span>
+          Driver Assigned
+        </h3>
+        <span
+          class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium {isOrderInTransit
+            ? 'bg-purple-200 text-purple-800'
+            : 'bg-blue-200 text-blue-800'}"
+        >
+          <span
+            class="w-2 h-2 {isOrderInTransit
+              ? 'bg-purple-500'
+              : 'bg-blue-500'} rounded-full mr-1.5 animate-pulse"
+          ></span>
+          {isOrderInTransit ? "In Transit" : "On Way to Pickup"}
+        </span>
+      </div>
+
+      <!-- Order flow visualization -->
+      <div
+        class="flex items-center justify-between mb-6 p-3 bg-white rounded-lg"
+      >
+        <div class="flex flex-col items-center">
+          <div
+            class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+          </div>
+          <span class="text-xs text-green-800 font-medium mt-1">Accepted</span>
+        </div>
+        <div class="flex-1 mx-1 h-1 bg-gray-200 relative">
+          <div class="absolute inset-0 bg-blue-500" style="width: 100%"></div>
+        </div>
+        <div class="flex flex-col items-center">
+          <div
+            class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+              />
+            </svg>
+          </div>
+          <span class="text-xs text-blue-800 font-medium mt-1"
+            >Driver Assigned</span
+          >
+        </div>
+        <div class="flex-1 mx-1 h-1 bg-gray-200 relative">
+          <div
+            class="absolute inset-0 bg-purple-500"
+            style="width: {isOrderInTransit ? '100%' : '0%'}"
+          ></div>
+        </div>
+        <div class="flex flex-col items-center">
+          <div
+            class="w-8 h-8 rounded-full {isOrderInTransit
+              ? 'bg-purple-500 text-white'
+              : 'bg-gray-200 text-gray-400'} flex items-center justify-center"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M17 8l4 4m0 0l-4 4m4-4H3"
+              />
+            </svg>
+          </div>
+          <span
+            class="text-xs {isOrderInTransit
+              ? 'text-purple-800'
+              : 'text-gray-500'} font-medium mt-1">In Transit</span
+          >
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center mb-4">
+        <div
+          class="flex-shrink-0 w-16 h-16 bg-blue-200 rounded-full flex items-center justify-center"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-8 w-8 text-blue-600"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+            />
+          </svg>
+        </div>
+        <div class="flex-grow">
+          <h4 class="text-md font-semibold text-blue-900">
+            {assignedDriver.userName || "Assigned Driver"}
+          </h4>
+          <div class="mt-1 grid grid-cols-2 gap-x-4 gap-y-1">
+            <div class="flex items-center text-sm text-blue-700">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4 mr-1"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                />
+              </svg>
+              <span>{assignedDriver.phoneNumber || "N/A"}</span>
+            </div>
+            <div class="flex items-center text-sm text-blue-700">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4 mr-1"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                />
+              </svg>
+              <span>ID: {assignedDriver.id || "N/A"}</span>
+            </div>
+            <div class="flex items-center text-sm text-blue-700">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4 mr-1"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span class="font-medium"
+                >{isOrderInTransit ? "IN_TRANSIT" : "ASSIGNED"}</span
+              >
+            </div>
+            <div class="flex items-center text-sm text-blue-700">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4 mr-1"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+                />
+              </svg>
+              <span>{data.orderDetail?.vehicleType || "CAR"}</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex-shrink-0 ml-0 mt-3 sm:mt-0 sm:ml-4">
+          <a
+            href={`tel:${assignedDriver.phoneNumber}`}
+            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            <svg
+              class="-ml-1 mr-2 h-4 w-4"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+              />
+            </svg>
+            Call
+          </a>
+        </div>
+      </div>
+
+      <!-- Status message -->
+      <div
+        class="p-4 {isOrderInTransit
+          ? 'bg-purple-50 border-purple-100'
+          : 'bg-blue-50 border-blue-100'} rounded-lg border mb-4"
+      >
+        <p
+          class="font-medium {isOrderInTransit
+            ? 'text-purple-800'
+            : 'text-blue-800'}"
+        >
+          {#if isOrderInTransit}
+            Your package is now in transit! The driver has picked up your
+            package and is on the way to the delivery location.
+          {:else}
+            A driver has been assigned and is on the way to pick up your
+            package. You'll be notified when the pickup is complete.
+          {/if}
+        </p>
+        <p
+          class="text-sm {isOrderInTransit
+            ? 'text-purple-600'
+            : 'text-blue-600'} mt-1"
+        >
+          {#if data.orderDetail?.paymentOption === "pay_on_delivery"}
+            Remember to have your payment ready when the driver arrives for
+            delivery.
+          {:else if data.orderDetail?.paymentOption === "pay_on_pickup" && !data.orderDetail?.paymentStatus}
+            Complete your payment now to ensure a smooth pickup process.
+          {/if}
+        </p>
+      </div>
+
+      <!-- Driver Location Map -->
+      <div class="mt-5 mb-5">
+        <div class="flex items-center justify-between mb-3">
+          <h4
+            class="text-sm font-semibold {isOrderInTransit
+              ? 'text-purple-800'
+              : 'text-blue-800'}"
+          >
+            Driver Location Tracking
+          </h4>
+
+          <div class="flex items-center">
+            <span
+              class="text-xs {$isConnected
+                ? 'text-green-600'
+                : 'text-gray-500'} mr-2 flex items-center"
+            >
+              <span
+                class="w-2 h-2 rounded-full {$isConnected
+                  ? 'bg-green-500 animate-pulse'
+                  : 'bg-gray-400'} mr-1"
+              ></span>
+              {$isConnected ? "Connected" : "Offline"}
+            </span>
+
+            <button
+              on:click={() => {
+                if (data.orderDetail?.id) {
+                  trackOrderDriver(data.orderDetail.id);
+                  toast.push("Refreshing driver location...", {
+                    duration: 2000,
+                    theme: {
+                      "--toastBackground": "#3B82F6",
+                      "--toastColor": "white",
+                    },
+                  });
+                }
+              }}
+              class="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded-md hover:bg-blue-200 transition flex items-center"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-3 w-3 mr-1"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div
+          class="h-[300px] rounded-lg overflow-hidden border {isOrderInTransit
+            ? 'border-purple-200'
+            : 'border-blue-200'} shadow-sm"
+        >
+          {#if driverCoordinates}
+            <DriverLocationMap
+              order={{
+                id: data.orderDetail?.id || null,
+                pickUpMapLocation: data.orderDetail?.pickUpMapLocation || null,
+                dropOffMapLocation:
+                  data.orderDetail?.dropOffMapLocation || null,
+              }}
+              driverLocation={driverCoordinates}
+              {driverIsOnline}
+              driverName={assignedDriver.userName || "Driver"}
+            />
+            <div
+              class="flex items-center justify-between mt-2 text-xs text-gray-600 px-2"
+            >
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-yellow-400 rounded-full mr-1.5"></div>
+                <span>Driver Location</span>
+              </div>
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-green-500 rounded-full mr-1.5"></div>
+                <span>Pickup Location</span>
+              </div>
+              <div class="flex items-center">
+                <div class="w-3 h-3 bg-red-500 rounded-full mr-1.5"></div>
+                <span>Delivery Location</span>
+              </div>
+            </div>
+          {:else}
+            <div
+              class="h-full flex flex-col items-center justify-center bg-gray-50"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-12 w-12 text-gray-400 mb-2"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"
+                />
+              </svg>
+              <p class="text-gray-500">Waiting for driver location updates</p>
+              <p class="text-xs text-gray-400 mt-1">
+                Location updates appear in real-time as the driver moves
+              </p>
+              <button
+                on:click={() => {
+                  if (data.orderDetail?.id) {
+                    trackOrderDriver(data.orderDetail.id);
+                    toast.push("Refreshing driver data...", {
+                      duration: 2000,
+                      theme: {
+                        "--toastBackground": "#3B82F6",
+                        "--toastColor": "white",
+                      },
+                    });
+                  }
+                }}
+                class="mt-3 px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition"
+              >
+                Refresh Driver Data
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Order Milestones Progress -->
+      {#if data.orderDetail?.orderMilestone && data.orderDetail.orderMilestone.length > 0}
+        <div
+          class="mt-5 pt-5 border-t {isOrderInTransit
+            ? 'border-purple-200'
+            : 'border-blue-200'}"
+        >
+          <h4
+            class="text-sm font-semibold {isOrderInTransit
+              ? 'text-purple-800'
+              : 'text-blue-800'} mb-3"
+          >
+            Order Progress
+          </h4>
+          <div class="space-y-3">
+            {#each data.orderDetail.orderMilestone
+              .filter((m) => m.isCompleted)
+              .slice(0, 3) as milestone}
+              <div class="flex items-start">
+                <div
+                  class="flex-shrink-0 h-5 w-5 rounded-full bg-green-500 flex items-center justify-center mr-3"
+                >
+                  <svg
+                    class="h-3 w-3 text-white"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="3"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <p
+                    class="text-sm {isOrderInTransit
+                      ? 'text-purple-700'
+                      : 'text-blue-700'}"
+                  >
+                    {milestone.description}
+                  </p>
+                  <p
+                    class="text-xs {isOrderInTransit
+                      ? 'text-purple-500'
+                      : 'text-blue-500'}"
+                  >
+                    {dayjs(milestone.createdAt).format("MMM D, h:mm A")}
+                  </p>
+                </div>
+              </div>
+            {/each}
+
+            {#if activeOrderDispatch}
+              <div class="flex items-start">
+                <div
+                  class="h-5 w-5 rounded-full border-2 {isOrderInTransit
+                    ? 'border-purple-500'
+                    : 'border-blue-500'} flex items-center justify-center mr-3 animate-pulse"
+                >
+                  <div
+                    class="h-2 w-2 rounded-full {isOrderInTransit
+                      ? 'bg-purple-500'
+                      : 'bg-blue-500'}"
+                  ></div>
+                </div>
+                <div>
+                  <p
+                    class="text-sm {isOrderInTransit
+                      ? 'text-purple-700'
+                      : 'text-blue-700'}"
+                  >
+                    {isOrderInTransit
+                      ? "Driver is in transit with your package"
+                      : "Driver on way to pickup location"}
+                  </p>
+                  <p
+                    class="text-xs {isOrderInTransit
+                      ? 'text-purple-500'
+                      : 'text-blue-500'}"
+                  >
+                    {dayjs(activeOrderDispatch.createdAt).fromNow()}
+                  </p>
+                </div>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Payment Call-to-Action when driver assigned and payment eligible -->
+      {#if canProceedToPayment && data.orderDetail?.paymentOption === "pay_on_pickup"}
+        <div
+          class="mt-5 pt-5 border-t {isOrderInTransit
+            ? 'border-purple-200'
+            : 'border-blue-200'} flex flex-col items-center"
+        >
+          <p
+            class="text-sm {isOrderInTransit
+              ? 'text-purple-700'
+              : 'text-blue-700'} mb-3 text-center"
+          >
+            Your driver is on the way! Complete payment now to ensure a smooth
+            pickup process.
+          </p>
+          <button
+            on:click={handleProceedToPayment}
+            class="w-full sm:w-auto inline-flex items-center justify-center px-5 py-3 border border-transparent text-base font-medium rounded-md text-white {isOrderInTransit
+              ? 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'
+              : 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'} focus:outline-none focus:ring-2 focus:ring-offset-2"
+          >
+            <svg
+              class="-ml-1 mr-2 h-5 w-5"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
+              />
+            </svg>
+            Pay for Pickup Now
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- Payment section updates -->
+<!-- Update the payment options section -->
+{#if data.orderDetail?.paymentOption === "pay_on_delivery" && componentsOrder === 4}
+  <div
+    class="bg-yellow-50 border border-yellow-200 rounded-xl p-5 my-6 flex items-start space-x-4"
+  >
+    <div class="flex-shrink-0">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        class="h-6 w-6 text-yellow-500"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+        />
+      </svg>
+    </div>
+    <div>
+      <h3 class="text-md font-semibold text-yellow-800">Cash on Delivery</h3>
+      <p class="text-sm text-yellow-700 mt-1">
+        You've selected to pay on delivery. Have the exact amount of ETB {formatPrice(
+          data.orderDetail?.totalCost || 0
+        )} ready when the driver delivers your package.
+      </p>
     </div>
   </div>
 {/if}

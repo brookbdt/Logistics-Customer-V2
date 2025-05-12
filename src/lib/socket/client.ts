@@ -48,6 +48,16 @@ export const unreadNotificationCount = derived(
     ($notifications) => $notifications.filter(n => !n.isRead).length
 );
 
+// Payment verification events
+export const paymentEvents = writable<{
+    [orderId: string]: {
+        orderId: number;
+        paymentMethod: string;
+        verifiedAt: string;
+        orderStatus: string;
+    }
+}>({});
+
 // Function to log socket events
 export function logSocketEvent(event: string, data?: any) {
     console.log(`Socket event: ${event}`, data);
@@ -236,6 +246,23 @@ export async function initSocket(): Promise<Socket | null> {
         return null;
     }
 }
+
+/**
+ * Subscribe to specific payment updates for an order
+ */
+export function subscribeToPaymentUpdates(orderId: number): void {
+    if (!socketInstance) return;
+
+    console.log(`Subscribing to payment updates for order ${orderId}`);
+
+    // Join the order-specific room
+    socketInstance.emit('join', `order_${orderId}`);
+
+    // Request any existing payment status
+    // This event doesn't exist on the server yet, but could be added in the future
+    socketInstance.emit('getPaymentStatus', { orderId });
+}
+
 
 /**
  * Subscribe to specific order updates with improved reconnection handling
@@ -439,6 +466,100 @@ function setupMessageHandlers(socket: Socket): void {
             ...stores,
             [data.warehouseId]: data.orders
         }));
+    });
+
+    // Payment verification event
+    socket.on('paymentVerified', (data: {
+        orderId: number;
+        orderMilestoneId: number;
+        paymentMethod: string;
+        paymentStatus: boolean;
+        verifiedAt: string;
+        orderStatus: string;
+        milestoneCompleted: boolean;
+        isLastMilestone: boolean;
+    }) => {
+        console.log('Received payment verification event:', data);
+
+        // Update the payment events store
+        paymentEvents.update(events => {
+            const orderId = data.orderId.toString();
+            events[orderId] = {
+                orderId: data.orderId,
+                paymentMethod: data.paymentMethod,
+                verifiedAt: data.verifiedAt,
+                orderStatus: data.orderStatus
+            };
+            return events;
+        });
+
+        // Also update the order status in active orders
+        activeOrders.update(orders => {
+            const index = orders.findIndex(o => o.id === data.orderId);
+            if (index >= 0) {
+                // Create updated order object
+                const updatedOrder = {
+                    ...orders[index],
+                    orderStatus: data.orderStatus,
+                    paymentStatus: true,
+                    paymentMethod: data.paymentMethod,
+                    paymentDate: data.verifiedAt
+                };
+
+                // Replace the order in the array
+                return [
+                    ...orders.slice(0, index),
+                    updatedOrder,
+                    ...orders.slice(index + 1)
+                ];
+            }
+            return orders;
+        });
+
+        // Update warehouse orders if applicable
+        warehouseOrders.update(stores => {
+            // Make a copy of the stores object
+            const updatedStores = { ...stores };
+
+            // Look through each warehouse's orders
+            Object.keys(updatedStores).forEach(warehouseId => {
+                const warehouseIdNum = parseInt(warehouseId);
+                if (isNaN(warehouseIdNum)) return;
+
+                const orders = updatedStores[warehouseIdNum];
+                if (!orders || !Array.isArray(orders)) return;
+
+                const index = orders.findIndex((o: Order) => o.id === data.orderId);
+
+                if (index >= 0) {
+                    // Update the order in this warehouse
+                    const updatedOrder = {
+                        ...orders[index],
+                        orderStatus: data.orderStatus,
+                        paymentStatus: true,
+                        paymentMethod: data.paymentMethod,
+                        paymentDate: data.verifiedAt
+                    };
+
+                    // Replace the order in the array
+                    updatedStores[warehouseIdNum] = [
+                        ...orders.slice(0, index),
+                        updatedOrder,
+                        ...orders.slice(index + 1)
+                    ];
+                }
+            });
+
+            return updatedStores;
+        });
+
+        // Dispatch a custom event that components can listen for
+        if (browser) {
+            const event = new CustomEvent('paymentVerified', {
+                detail: data
+            });
+            window.dispatchEvent(event);
+        }
     });
 
     // Driver location updates

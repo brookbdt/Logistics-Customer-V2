@@ -16,6 +16,8 @@
     subscribeToOrder,
     initSocket,
     isConnected,
+    subscribeToPaymentUpdates,
+    paymentEvents,
   } from "$lib/socket/client.js";
   import {
     initDriverTracking,
@@ -299,9 +301,46 @@
     );
   }
 
+  let hasPaymentVerification = false;
+  let paymentDetails: Record<string, any> = {};
+  let connected = false;
+
   // Add tracking variables and setup polling mechanism
   let driverLocationPolling: ReturnType<typeof setInterval> | null = null;
   let socketInitialized = false;
+
+  // Subscribe to socket connection status
+  const unsubscribeConnection = isConnected.subscribe((value) => {
+    connected = value;
+    // When connection is established, subscribe to payment updates for this order
+    if (connected && data.orderDetail.id) {
+      subscribeToPaymentUpdates(data.orderDetail.id);
+    }
+  });
+
+  // Subscribe to payment events to update UI
+  const unsubscribePaymentEvents = paymentEvents.subscribe((events) => {
+    const orderIdStr = data.orderDetail.id.toString();
+    if (events[orderIdStr]) {
+      hasPaymentVerification = true;
+      paymentDetails = events[orderIdStr];
+      // If we have a real-time payment update that isn't reflected in the order data
+      if (data.orderDetail && !data.orderDetail.paymentStatus) {
+        // Update the order detail in our local state
+        data.orderDetail = {
+          ...data.orderDetail,
+          paymentStatus: true,
+          paymentMethod: paymentDetails.paymentMethod,
+          orderStatus: paymentDetails.orderStatus,
+          paymentDate: paymentDetails.verifiedAt,
+        };
+        // Show a notification
+        toast.push("Payment verification received!", {
+          classes: ["success"],
+        });
+      }
+    }
+  });
 
   // Update onMount function to properly initialize tracking
   onMount(() => {
@@ -327,6 +366,9 @@
           // Setup fallback polling for driver location
           setupDriverPolling();
 
+          // Subscribe to payment updates for this order
+          subscribeToPaymentUpdates(data.orderDetail.id);
+
           toast.push("Live driver tracking activated", {
             duration: 3000,
             theme: {
@@ -349,6 +391,12 @@
           });
         });
     }
+  });
+
+  // Clean up subscriptions on component destroy
+  onDestroy(() => {
+    if (unsubscribeConnection) unsubscribeConnection();
+    if (unsubscribePaymentEvents) unsubscribePaymentEvents();
   });
 
   // Add a function to set up polling as fallback for sockets
@@ -1468,28 +1516,42 @@
                 <h3 class="font-semibold text-complementary">
                   Payment Details
                 </h3>
-                <div class="mt-1 grid grid-cols-2 gap-2">
-                  <div>
-                    <p class="text-xs text-gray-500">Amount</p>
-                    <p class="text-gray-800 font-medium">
-                      {data.orderDetail?.paymentAmount}
-                    </p>
+                {#if data.orderDetail?.paymentAmount && data.orderDetail?.paymentMethod && data.orderDetail?.paymentDate}
+                  <div class="mt-1 grid grid-cols-2 gap-2">
+                    <div>
+                      <p class="text-xs text-gray-500">Amount</p>
+                      <p class="text-gray-800 font-medium">
+                        {data.orderDetail.paymentAmount}
+                      </p>
+                    </div>
+                    <div>
+                      <p class="text-xs text-gray-500">Method</p>
+                      <p class="text-gray-800 font-medium">
+                        {data.orderDetail.paymentMethod}
+                      </p>
+                    </div>
+                    <div class="col-span-2">
+                      <p class="text-xs text-gray-500">Transaction Date</p>
+                      <p class="text-gray-800">
+                        {dayjs(data.orderDetail.paymentDate).format(
+                          "MMM DD, YYYY • h:mm A"
+                        )}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p class="text-xs text-gray-500">Method</p>
-                    <p class="text-gray-800 font-medium">
-                      {data.orderDetail?.paymentMethod}
-                    </p>
-                  </div>
-                  <div class="col-span-2">
-                    <p class="text-xs text-gray-500">Transaction Date</p>
-                    <p class="text-gray-800">
-                      {dayjs(data.orderDetail?.paymentDate).format(
-                        "MMM DD, YYYY • h:mm A"
-                      )}
-                    </p>
-                  </div>
-                </div>
+                {:else if isPayOnDelivery}
+                  <p class="mt-1 text-gray-600 text-sm">
+                    Payment will be collected upon delivery.
+                  </p>
+                {:else if isOrderPaid}
+                  <p class="mt-1 text-gray-600 text-sm">
+                    Payment has been received.
+                  </p>
+                {:else}
+                  <p class="mt-1 text-gray-600 text-sm">
+                    Payment has not been made yet.
+                  </p>
+                {/if}
               </div>
             </div>
           </div>

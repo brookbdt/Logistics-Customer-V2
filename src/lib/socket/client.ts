@@ -55,6 +55,16 @@ export const paymentEvents = writable<{
         paymentMethod: string;
         verifiedAt: string;
         orderStatus: string;
+        milestoneCompleted: boolean;
+        isLastMilestone: boolean;
+        milestoneInfo?: {
+            id: number;
+            description: string;
+            isCompleted: boolean;
+            executionOrder?: number;
+            coordinates?: string;
+        };
+        milestoneDescription?: string;
     }
 }>({});
 
@@ -468,6 +478,7 @@ function setupMessageHandlers(socket: Socket): void {
         }));
     });
 
+
     // Payment verification event
     socket.on('paymentVerified', (data: {
         orderId: number;
@@ -478,6 +489,14 @@ function setupMessageHandlers(socket: Socket): void {
         orderStatus: string;
         milestoneCompleted: boolean;
         isLastMilestone: boolean;
+        milestoneDescription?: string;
+        milestoneInfo?: {
+            id: number;
+            description: string;
+            isCompleted: boolean;
+            executionOrder?: number;
+            coordinates?: string;
+        };
     }) => {
         console.log('Received payment verification event:', data);
 
@@ -488,10 +507,15 @@ function setupMessageHandlers(socket: Socket): void {
                 orderId: data.orderId,
                 paymentMethod: data.paymentMethod,
                 verifiedAt: data.verifiedAt,
-                orderStatus: data.orderStatus
+                orderStatus: data.orderStatus,
+                milestoneCompleted: data.milestoneCompleted,
+                isLastMilestone: data.isLastMilestone,
+                milestoneInfo: data.milestoneInfo,
+                milestoneDescription: data.milestoneDescription || ''
             };
             return events;
         });
+
 
         // Also update the order status in active orders
         activeOrders.update(orders => {

@@ -45,7 +45,7 @@ export const createOrderSchema = z.object({
     vehicleType: z.string().optional(),
 
     // Payment Option
-    paymentOption: z.enum(['pay_on_pickup', 'pay_on_delivery']).default('pay_on_pickup'),
+    paymentOption: z.enum(['pay_on_pickup', 'pay_on_delivery', 'pay_now']).default('pay_on_pickup'),
 
     // Weight and Dimensions
     actualWeight: z.coerce.number().min(0.1, "Weight must be at least 0.1kg").default(0.5),

@@ -232,7 +232,10 @@
           <button
             class="w-full bg-white text-secondary font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 shadow-lg hover:bg-gray-100 transition-all"
           >
-            <Add class="w-5 h-5" /> New Order
+            <span class="text-secondary">
+              <Add class="w-5 h-5 text-secondary" />
+            </span>
+            New Order
           </button>
         </a>
         <button

@@ -167,7 +167,7 @@
   });
 
   $: pickUpDateProxy = dateProxy(orderForm, "pickUpTime", {
-    format: "date",
+    format: "datetime-local",
   });
 
   // Helper functions for location permissions
@@ -1058,7 +1058,7 @@
         </div>
         <input
           id="pickupDate"
-          type="date"
+          type="datetime-local"
           bind:value={$pickUpDateProxy}
           min={today}
           class="w-full pl-10 p-3 border {$errors.pickUpTime

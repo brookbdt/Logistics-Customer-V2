@@ -15,8 +15,8 @@
   export { className as class };
 
   $: if (form?.checkoutUrl) {
-    // @ts-ignores
-    location.href = form.checkoutUrl.checkout_url;
+    // Open Chapa in a new tab
+    window.open(form.checkoutUrl.checkout_url, "_blank");
   }
 
   const {
@@ -126,25 +126,14 @@
 
   // Handle bank transfer submission
   async function handleBankTransferSubmit() {
-    if (!transactionRef.trim()) {
-      toast.push("Please enter a transaction reference number", {
-        theme: {
-          "--toastBackground": "#F87171",
-          "--toastColor": "white",
-        },
-      });
-      return;
-    }
-
-    // Note: In a real implementation, you would upload the screenshot to a server
-    // For now, we'll just proceed with the reference number
+    // No transaction ref is needed - just proceed
     isSubmitting = true;
 
     // Simulating form submission - in reality, this would be sent to the server
     setTimeout(() => {
       isSubmitting = false;
       toast.push(
-        "Bank transfer details submitted. Awaiting verification from driver upon pickup.",
+        "Bank transfer selection confirmed. Please make the payment and keep your receipt for the driver.",
         {
           theme: {
             "--toastBackground": "#10B981",
@@ -290,6 +279,49 @@
               </svg>
             </div>
           </div>
+
+          <!-- Online payment with Chapa -->
+          <div
+            class="flex items-center p-4 border rounded-lg cursor-pointer {paymentMethod ===
+            'online'
+              ? 'border-blue-500 bg-blue-50'
+              : 'border-gray-200'}"
+            on:click={() => (paymentMethod = "online")}
+          >
+            <div class="flex-shrink-0 mr-4">
+              <div
+                class="h-5 w-5 rounded-full border-2 {paymentMethod === 'online'
+                  ? 'border-blue-500'
+                  : 'border-gray-400'} flex items-center justify-center"
+              >
+                {#if paymentMethod === "online"}
+                  <div class="h-3 w-3 rounded-full bg-blue-500"></div>
+                {/if}
+              </div>
+            </div>
+            <div class="flex-grow">
+              <h4 class="font-medium text-gray-800">Online Payment</h4>
+              <p class="text-sm text-gray-600">
+                Pay securely with card or mobile money
+              </p>
+            </div>
+            <div class="flex-shrink-0">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-6 w-6 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+                />
+              </svg>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -329,8 +361,7 @@
               <p class="text-sm text-blue-700 mb-4">
                 Please transfer ETB {safeFormatPrice(
                   data.orderDetail?.totalCost
-                )} to any of the accounts above and provide the transaction reference
-                below.
+                )} to any of the accounts above.
               </p>
 
               <div class="mb-4">
@@ -338,7 +369,7 @@
                   for="transactionRef"
                   class="block text-sm font-medium text-gray-700 mb-1"
                 >
-                  Transaction Reference Number*
+                  Transaction Reference Number (Optional)
                 </label>
                 <input
                   id="transactionRef"
@@ -346,70 +377,6 @@
                   class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
                   placeholder="Enter bank transfer reference number"
                 />
-              </div>
-
-              <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  Upload Payment Receipt (Optional)
-                </label>
-                <div
-                  class="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-lg"
-                >
-                  <div class="space-y-1 text-center">
-                    {#if previewUrl}
-                      <div class="mb-3">
-                        <img
-                          src={previewUrl}
-                          alt="Receipt preview"
-                          class="h-40 w-auto mx-auto object-contain"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        on:click={() => {
-                          previewUrl = null;
-                          uploadedFile = null;
-                        }}
-                        class="text-sm text-red-600 hover:text-red-700"
-                      >
-                        Remove image
-                      </button>
-                    {:else}
-                      <svg
-                        class="mx-auto h-12 w-12 text-gray-400"
-                        stroke="currentColor"
-                        fill="none"
-                        viewBox="0 0 48 48"
-                        aria-hidden="true"
-                      >
-                        <path
-                          d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
-                      <div class="flex text-sm text-gray-600">
-                        <label
-                          for="file-upload"
-                          class="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500"
-                        >
-                          <span>Upload a file</span>
-                          <input
-                            id="file-upload"
-                            name="file-upload"
-                            type="file"
-                            class="sr-only"
-                            accept="image/jpeg,image/png"
-                            on:change={handleFileChange}
-                          />
-                        </label>
-                        <p class="pl-1">or drag and drop</p>
-                      </div>
-                      <p class="text-xs text-gray-500">PNG or JPG up to 5MB</p>
-                    {/if}
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -437,12 +404,12 @@
                     What happens next?
                   </h5>
                   <p class="text-xs text-gray-600 mt-1">
-                    After submitting your bank transfer details, the driver will
-                    verify your payment upon {data.orderDetail
-                      ?.paymentOption === "pay_on_pickup"
+                    After making the bank transfer, take a screenshot of your
+                    payment confirmation. Our driver will verify your payment
+                    when they arrive at {data.orderDetail?.paymentOption ===
+                    "pay_on_pickup"
                       ? "pickup"
-                      : "delivery"}. Please show the driver the payment
-                    confirmation or receipt from your bank.
+                      : "delivery"}. No need to upload anything now.
                   </p>
                 </div>
               </div>
@@ -523,6 +490,133 @@
                       ? "pickup"
                       : "delivery"}. Please prepare the exact amount to ensure a
                     smooth transaction.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Online Payment Details -->
+      {#if paymentMethod === "online"}
+        <div transition:slide={{ duration: 300 }} class="mb-6">
+          <div class="p-4 border border-blue-200 rounded-lg bg-blue-50">
+            <h4 class="font-medium text-blue-800 mb-3">
+              Secure Online Payment
+            </h4>
+            <p class="text-sm text-blue-700 mb-4">
+              You'll be redirected to our secure payment gateway to complete
+              your payment for ETB {safeFormatPrice(
+                data.orderDetail?.totalCost
+              )}.
+            </p>
+
+            <div class="mt-4 flex flex-wrap justify-center gap-2 mb-6">
+              <div
+                class="bg-white p-2 rounded-lg border border-gray-200 flex items-center"
+              >
+                <span class="text-xs font-medium text-gray-700 mx-2">Visa</span>
+              </div>
+              <div
+                class="bg-white p-2 rounded-lg border border-gray-200 flex items-center"
+              >
+                <span class="text-xs font-medium text-gray-700 mx-2"
+                  >MasterCard</span
+                >
+              </div>
+              <div
+                class="bg-white p-2 rounded-lg border border-gray-200 flex items-center"
+              >
+                <span class="text-xs font-medium text-gray-700 mx-2"
+                  >Telebirr</span
+                >
+              </div>
+              <div
+                class="bg-white p-2 rounded-lg border border-gray-200 flex items-center"
+              >
+                <span class="text-xs font-medium text-gray-700 mx-2">CBE</span>
+              </div>
+            </div>
+
+            <form
+              method="POST"
+              action="?/paymentUrl"
+              use:enhance
+              target="_blank"
+            >
+              <input type="hidden" name="email" value={$addPaymentForm.email} />
+              <input
+                type="hidden"
+                name="firstName"
+                value={$addPaymentForm.firstName}
+              />
+              <input
+                type="hidden"
+                name="lastName"
+                value={$addPaymentForm.lastName}
+              />
+              <input
+                type="hidden"
+                name="phoneNumber"
+                value={$addPaymentForm.phoneNumber}
+              />
+
+              <button
+                type="submit"
+                class="w-full bg-blue-600 text-white font-medium py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center"
+              >
+                {#if isSubmitting}
+                  <div
+                    class="h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"
+                  ></div>
+                  Processing...
+                {:else}
+                  Proceed to Payment
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 ml-2"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M14 5l7 7m0 0l-7 7m7-7H3"
+                    />
+                  </svg>
+                {/if}
+              </button>
+            </form>
+
+            <!-- Payment security note -->
+            <div class="mt-4 p-3 bg-white rounded-lg border border-blue-100">
+              <div class="flex items-start">
+                <div class="flex-shrink-0 mt-0.5">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-blue-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <div class="ml-3">
+                  <h5 class="text-sm font-medium text-gray-800">
+                    Secure Payment
+                  </h5>
+                  <p class="text-xs text-gray-600 mt-1">
+                    Your payment information is processed securely. We do not
+                    store credit card details.
                   </p>
                 </div>
               </div>

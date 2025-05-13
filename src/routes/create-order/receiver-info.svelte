@@ -38,7 +38,9 @@
   export let orderForm: ReturnType<typeof superForm<CreateOrderFormInput>>;
 
   const { form, errors, enhance, constraints, message, submitting } = orderForm;
-  const dropOffDateProxy = dateProxy(form, "dropOffTime", { format: "date" });
+  const dropOffDateProxy = dateProxy(form, "dropOffTime", {
+    format: "datetime-local",
+  });
 
   export let lat1: number | null = null;
   export let lng1: number | null = null;
@@ -1582,15 +1584,11 @@
         id="dropOffTime"
         disabled={disableInput}
         bind:value={$dropOffDateProxy}
-        bind:this={dateInput}
-        on:click={() => {
-          dateInput && dateInput.showPicker();
-        }}
         class="w-full p-3 border {$errors.dropOffTime ||
         validationErrors.dropOffTime
           ? 'border-red-500'
           : 'border-gray-300'} rounded-lg text-gray-700 focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-colors"
-        type="date"
+        type="datetime-local"
         min={today}
         name="dropOffTime"
       />

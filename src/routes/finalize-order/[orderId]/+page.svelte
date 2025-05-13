@@ -12,8 +12,9 @@
   import { cubicOut } from "svelte/easing";
   import { tweened } from "svelte/motion";
   import { fade, fly, scale, slide } from "svelte/transition";
-  import Payment from "./payment.svelte";
   // @ts-ignore
+  import Payment from "./payment.svelte";
+
   // Import our new components
   import OrderAcceptedAnimation from "$lib/components/order-accepted-animation.svelte";
   // Import socket functionality for realtime updates
@@ -90,7 +91,36 @@
       !data.orderDetail?.paymentStatus) ||
     // Pay now option - always available if not paid
     (data.orderDetail?.paymentOption === "pay_now" &&
-      !data.orderDetail?.paymentStatus);
+      !data.orderDetail?.paymentStatus) ||
+    // Show if payment is required after order acceptance
+    (isOrderAccepted && !data.orderDetail?.paymentStatus);
+
+  // If payment status verification shows a successful payment, redirect to order detail
+  $: if (
+    data.verifyPayment?.status === "success" &&
+    data.orderDetail?.paymentStatus &&
+    browser
+  ) {
+    toast.push("Payment successful! Your order is confirmed.", {
+      theme: {
+        "--toastBackground": "#10B981",
+        "--toastColor": "white",
+      },
+    });
+    setTimeout(() => {
+      if (data.orderDetail?.id && browser) {
+        goto(`/order-detail/${data.orderDetail.id}`);
+      }
+    }, 2000);
+  }
+
+  // If payment option is pay_now, automatically show payment component
+  $: if (data.shouldShowPaymentOptions && componentsOrder === 4) {
+    // Show payment component with a small delay
+    setTimeout(() => {
+      componentsOrder = 6;
+    }, 1000);
+  }
 
   // Get assigned driver info
   $: assignedDriver =
@@ -150,18 +180,6 @@
   // Automatically set the component order to 4 (review) if the order is not yet accepted
   $: if (!isOrderAccepted && componentsOrder === 5) {
     componentsOrder = 4;
-  }
-
-  // If payment option is pay_now, automatically show payment component
-  $: if (
-    data.orderDetail?.paymentOption === "pay_now" &&
-    !data.orderDetail?.paymentStatus &&
-    componentsOrder === 4
-  ) {
-    // Add a small delay so this doesn't run immediately
-    setTimeout(() => {
-      componentsOrder = 5; // Show payment component
-    }, 1000);
   }
 
   let previousOrderStatus = data.orderDetail?.orderStatus;
@@ -523,6 +541,35 @@
         trackOrderDriver(data.orderDetail.id);
       }
     }, 10000);
+  }
+
+  // Function to directly initiate payment for 'pay now' option
+  async function initiatePaymentNow() {
+    try {
+      // Show loading indicator
+      toast.push("Connecting to payment gateway...", {
+        theme: {
+          "--toastBackground": "#3B82F6",
+          "--toastColor": "white",
+        },
+      });
+
+      // Submit form with initiatePayment action
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = `?/initiatePayment`;
+      form.target = "_blank"; // Open in new tab
+      document.body.appendChild(form);
+      form.submit();
+    } catch (error) {
+      console.error("Failed to initiate payment:", error);
+      toast.push("Payment initiation failed. Please try again.", {
+        theme: {
+          "--toastBackground": "#EF4444",
+          "--toastColor": "white",
+        },
+      });
+    }
   }
 </script>
 
@@ -2121,7 +2168,7 @@
               </div>
 
               <button
-                on:click={() => (componentsOrder = 5)}
+                on:click={() => (componentsOrder = 6)}
                 class="w-full bg-gradient-to-r from-secondary to-secondary-dark text-white text-sm sm:text-base font-medium py-3 px-6 sm:px-8 rounded-lg shadow-md hover:shadow-lg flex items-center justify-center gap-2 hover:translate-y-[-2px] transition-all duration-200"
               >
                 <svg
@@ -2333,13 +2380,13 @@
     {/if}
 
     <!-- Payment (Step 5) - Show based on payment option and status -->
-    {#if componentsOrder === 5 && (canProceedToPayment || data.orderDetail?.paymentOption === "pay_now")}
+    {#if componentsOrder === 6 && (canProceedToPayment || data.orderDetail?.paymentOption === "pay_now")}
       <div in:fade={{ duration: 300 }}>
         <Payment
           {data}
           {form}
           {componentsOrder}
-          on:back={() => (componentsOrder = 4)}
+          on:back={() => (componentsOrder = 5)}
         />
       </div>
     {/if}

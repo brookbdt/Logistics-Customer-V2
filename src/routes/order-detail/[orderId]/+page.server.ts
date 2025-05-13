@@ -23,7 +23,8 @@ const ORDER_STATUS = {
   BEING_REVIEWED: "BEING_REVIEWED" as Order_orderStatus,
   WAITING: "WAITING" as Order_orderStatus,
   ACCEPTED: "ACCEPTED" as Order_orderStatus,
-  CANCELLED: "CANCELLED" as Order_orderStatus
+  CANCELLED: "CANCELLED" as Order_orderStatus,
+  PENDING_PAYMENT: "PENDING_PAYMENT" as Order_orderStatus
 };
 
 export const load = async (event) => {
@@ -175,8 +176,14 @@ export const actions = {
       select: { orderStatus: true }
     });
 
-    // Only allow cancellation if order is in BEING_REVIEWED or WAITING status
-    if (!order || !(order.orderStatus === ORDER_STATUS.BEING_REVIEWED || order.orderStatus === ORDER_STATUS.WAITING)) {
+    // Allow cancellation for these statuses: BEING_REVIEWED, PENDING_PAYMENT, ACCEPTED
+    const cancellableStatuses = [
+      ORDER_STATUS.BEING_REVIEWED,
+      ORDER_STATUS.PENDING_PAYMENT,
+      ORDER_STATUS.ACCEPTED
+    ];
+
+    if (!order || !cancellableStatuses.includes(order.orderStatus)) {
       return {
         success: false,
         error: "This order cannot be cancelled as it is already in progress"

@@ -91,7 +91,10 @@ export const load = async (event) => {
     },
   });
 
-  // Check payment status
+  // Check if order needs immediate payment
+  const shouldShowPaymentOptions = orderDetail?.paymentOption === "pay_now" && !orderDetail?.paymentStatus;
+
+  // Check payment status if a payment reference exists
   let verifyPayment;
   if (orderDetail?.paymentRef) {
     try {
@@ -117,13 +120,23 @@ export const load = async (event) => {
           where: { id: orderId },
           data: { paymentStatus: true }
         });
+
+        // Reload order details after payment status update
+        const updatedOrder = await prisma.order.findFirst({
+          where: { id: orderId },
+          select: { paymentStatus: true }
+        });
+
+        if (updatedOrder) {
+          orderDetail.paymentStatus = updatedOrder.paymentStatus;
+        }
       }
     } catch (error) {
       console.error("Error verifying payment:", error);
     }
   }
 
-  // Initialize payment form
+  // Initialize payment form with user data if available
   const addPaymentForm = await superValidate(
     {
       email: session?.userData.email || "",
@@ -157,7 +170,9 @@ export const load = async (event) => {
     addPaymentForm,
     regions,
     customer,
-    pricingConfig: configData
+    pricingConfig: configData,
+    shouldShowPaymentOptions,
+    verifyPayment
   };
 };
 
@@ -285,24 +300,88 @@ async function loadPricingConfig() {
   };
 }
 
+// Helper function to initialize Chapa payment
+async function initializeChapa(
+  orderDetail: any,
+  userDetails: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    phoneNumber: string;
+  }
+) {
+  const tx_ref = randomBytes(10).toString("hex");
+
+  // Format phone number
+  const regex = /(^0)|(\d+)/g;
+  const validPhoneNumber = userDetails.phoneNumber.replace(
+    regex,
+    (match: string) => {
+      if (match[0] === "0") return "";
+      return "251" + match;
+    }
+  );
+
+  // Prepare callback and return URLs with order ID
+  const orderCallbackUrl = `${WEBAPP_URL}/order-detail/${orderDetail.id}`;
+
+  try {
+    const response = await fetch(
+      "https://api.chapa.co/v1/transaction/initialize",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer CHASECK_TEST-XnClzXRLcCLdg7cpBpuVMhPPgeTd7xNo",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount: orderDetail?.totalCost?.toString() || "0",
+          currency: "ETB",
+          email: userDetails.email,
+          first_name: userDetails.firstName,
+          last_name: userDetails.lastName,
+          phone_number: validPhoneNumber,
+          tx_ref: tx_ref,
+          callback_url: orderCallbackUrl,
+          return_url: orderCallbackUrl,
+          "customization[title]": `Payment for Order #${orderDetail.id}`,
+          "customization[description]": `Package from ${orderDetail?.Sender?.User?.userName || "Sender"} to ${orderDetail?.Receiver?.User?.userName || orderDetail?.receiverName || "Receiver"}`,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (data.status === "success") {
+      // Update order with payment reference
+      await prisma.order.update({
+        where: { id: orderDetail.id },
+        data: {
+          paymentRef: tx_ref,
+          paymentMethod: "CHAPA",
+          paymentDate: new Date(),
+          paymentAmount: orderDetail.totalCost || 0,
+        },
+      });
+
+      return { success: true, checkoutUrl: data.data.checkout_url, tx_ref };
+    } else {
+      throw new Error(data.message || "Failed to initialize payment");
+    }
+  } catch (error) {
+    console.error("Error initializing Chapa payment:", error);
+    throw error;
+  }
+}
+
 export let actions = {
   paymentUrl: async (event) => {
     const addPaymentForm = await superValidate(event.request, zod(addPaymentSchema));
 
-    if (addPaymentForm.errors.phoneNumber) {
-      return fail(500, { addPaymentForm, errorMessage: addPaymentForm.errors });
+    if (!addPaymentForm.valid) {
+      return fail(400, { addPaymentForm, errorMessage: addPaymentForm.errors });
     }
 
-    const regex = /(^0)|(\d+)/g;
-
-    const validPhoneNumber = (addPaymentForm.data.phoneNumber as string).replace(
-      regex,
-      (match: string) => {
-        if (match[0] === "0") return "";
-        return "251" + match;
-      }
-    );
-    let checkoutUrl;
     const orderDetail = await prisma.order.findFirst({
       where: {
         id: Number(event.params.orderId),
@@ -321,70 +400,86 @@ export let actions = {
       },
     });
 
-    try {
-      const tx_ref = randomBytes(10).toString("hex");
-      const checkoutUrlRequest = await fetch(
-        "https://api.chapa.co/v1/transaction/initialize",
-        {
-          method: "POST",
-          headers: {
-            Authorization:
-              "Bearer CHASECK_TEST-XnClzXRLcCLdg7cpBpuVMhPPgeTd7xNo",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            amount: orderDetail?.totalCost?.toString() || "0",
-            currency: "ETB",
-            email: addPaymentForm.data.email,
-            first_name: addPaymentForm.data.firstName,
-            last_name: addPaymentForm.data.lastName,
-            phone_number: validPhoneNumber,
-            tx_ref: tx_ref,
-            callback_url: WEBAPP_URL,
-            return_url: WEBAPP_URL,
-            "customization[title]":
-              orderDetail?.Sender.User.userName +
-              "Paying for Order: " +
-              orderDetail?.id,
-            "customization[description]":
-              "Package sent to: " + orderDetail?.Receiver?.User.userName ||
-              orderDetail?.receiverName,
-          }),
-        }
-      );
-
-      await checkoutUrlRequest.json().then((res) => {
-        checkoutUrl = res.data;
-      });
-
-      const updateOrder = await prisma.order.update({
-        where: {
-          id: Number(event.params.orderId),
-        },
-        data: {
-          paymentRef: tx_ref,
-          paymentMethod: "CHAPA",
-          paymentDate: new Date(),
-          paymentAmount: orderDetail?.totalCost || 0,
-        },
-      });
-    } catch (error) {
-      console.log(error as Error);
+    if (!orderDetail) {
+      return fail(404, { errorMessage: "Order not found" });
     }
 
-    return { checkoutUrl, addPaymentForm };
+    try {
+      const result = await initializeChapa(orderDetail, addPaymentForm.data);
+      return {
+        checkoutUrl: { checkout_url: result.checkoutUrl },
+        addPaymentForm
+      };
+    } catch (error) {
+      console.error("Error creating payment URL:", error);
+      return fail(500, {
+        addPaymentForm,
+        errorMessage: "Failed to create payment URL. Please try again."
+      });
+    }
   },
 
-  // New action for bank transfer payments
+  // For handling immediate payment during order creation
+  initiatePayment: async (event) => {
+    const orderId = Number(event.params.orderId);
+    const session = await event.locals.getSession() as EnhancedSessionType | null;
+
+    if (!session) {
+      return fail(401, { errorMessage: "You must be logged in to make a payment." });
+    }
+
+    const orderDetail = await prisma.order.findFirst({
+      where: { id: orderId },
+      include: {
+        Sender: { include: { User: true } },
+        Receiver: { include: { User: true } },
+      },
+    });
+
+    if (!orderDetail) {
+      return fail(404, { errorMessage: "Order not found" });
+    }
+
+    // Prefill form with user data
+    const userDetails = {
+      email: session.userData.email || "",
+      phoneNumber: session.userData.phoneNumber || "",
+      firstName: session.userData.userName?.split(' ')[0] || "",
+      lastName: session.userData.userName?.split(' ')[1] || session.userData.userName || "",
+    };
+
+    try {
+      const result = await initializeChapa(orderDetail, userDetails);
+
+      // Redirect to the checkout URL
+      throw redirect(303, result.checkoutUrl);
+    } catch (error) {
+      if (error instanceof Response) throw error; // For redirects
+
+      console.error("Failed to initiate payment:", error);
+      return fail(500, {
+        errorMessage: "Failed to initialize payment. Please try again or select a different payment method."
+      });
+    }
+  },
+
+  // Bank transfer payments
   bankTransfer: async (event) => {
     const addPaymentForm = await superValidate(event.request, zod(addPaymentSchema));
 
-    if (addPaymentForm.errors.phoneNumber) {
-      return fail(500, { addPaymentForm, errorMessage: addPaymentForm.errors });
+    if (!addPaymentForm.valid) {
+      return fail(400, { addPaymentForm, errorMessage: addPaymentForm.errors });
     }
 
     const formData = await event.request.formData();
     const transactionRef = formData.get("transactionRef") as string;
+
+    if (!transactionRef?.trim()) {
+      return fail(400, {
+        addPaymentForm,
+        errorMessage: "Transaction reference is required"
+      });
+    }
 
     // Get the order details
     const orderDetail = await prisma.order.findFirst({
@@ -408,23 +503,16 @@ export let actions = {
           paymentRef: transactionRef,
           // Mark as pending verification
           paymentStatus: false,
+          paymentDate: new Date(),
+          paymentAmount: orderDetail.totalCost || 0,
         },
       });
 
-      // For bank transfers, add a toast message but don't set payment status to true yet
-      // (would be verified manually)
-
-      // If the payment option is "pay_now", redirect to order detail page
-      if (orderDetail.paymentOption === "pay_now") {
-        throw redirect(302, `/order-detail/${orderDetail.id}`);
-      }
-
-      // Return success
-      return {
-        success: true,
-        message: "Bank transfer details submitted successfully. Your payment is pending verification.",
-      };
+      // Redirect to order detail page
+      throw redirect(303, `/order-detail/${orderDetail.id}`);
     } catch (error) {
+      if (error instanceof Response) throw error; // For redirects
+
       console.error("Error processing bank transfer:", error);
       return fail(500, {
         addPaymentForm,

@@ -25,6 +25,9 @@
 
   export let data: PageData;
 
+  // Add a flag to track if an order has been completed to prevent duplicate submissions
+  let orderCompleted = false;
+
   const orderForm = superForm(data.form, {
     validators: zod(createOrderSchema),
     dataType: "json",
@@ -46,12 +49,20 @@
       }
     },
     onSubmit: () => {
+      // Prevent multiple submissions
+      if (orderCompleted) {
+        console.log("Order already completed, preventing resubmission");
+        return;
+      }
       console.log("Form is being submitted with data:", $form);
       handleSubmit();
     },
     onResult({ result }) {
       console.log("Form submission result:", result);
       if (result.type === "success") {
+        // Set the order completed flag to prevent duplicate submissions
+        orderCompleted = true;
+
         if (result.data && result.data.newOrder) {
           toast.push(
             "Order created successfully! Your delivery is on its way.",
@@ -93,8 +104,8 @@
               // Store the order details for the completion page to use
               completedOrderDetails = orderDetails;
 
-              // We've removed the redirection to finalize-order page since that was causing the error
-              // The user can manually navigate to payment from the completion page instead
+              // Disable navigation back to previous steps after completion
+              disableStepNavigation = true;
             } catch (error) {
               console.error("Error handling form success:", error);
             }
@@ -114,18 +125,44 @@
 
           // We've removed the automatic redirect to finalize-order page to avoid validation errors
           // User will use the action buttons on the completion page
-        } else {
-          console.warn("Success response missing newOrder data:", result);
-          toast.push(
-            "Order status is unclear. Please check your orders history.",
-            {
-              theme: {
-                "--toastBackground": "#FEF3C7",
-                "--toastBarBackground": "#F59E0B",
-                "--toastColor": "#92400E",
-              },
-            }
-          );
+        } else if (result.data && result.data.draftOrder) {
+          // This is a pay_now order with a draft order created
+          // Redirect to payment page
+          toast.push("Order draft created. Redirecting to payment...", {
+            theme: {
+              "--toastBackground": "#3B82F6",
+              "--toastBarBackground": "#2563EB",
+            },
+          });
+
+          if (browser && result.data.paymentUrl) {
+            // Open the payment URL in a new tab
+            window.open(result.data.paymentUrl, "_blank");
+
+            // Also show the order completion screen with appropriate message
+            completedOrderId = result.data.orderId;
+
+            // Create generic order details until payment completes
+            completedOrderDetails = {
+              userName: $form.userName,
+              pickUpLocation: $form.pickUpLocation,
+              phoneNumber: $form.phoneNumber,
+              receiverUsername: $form.receiverUsername,
+              receiverPhoneNumber: $form.receiverPhoneNumber,
+              dropOffLocation: $form.dropOffLocation,
+              packageType: $form.packageType,
+              goodsType: $form.goodsType,
+              orderType: $form.orderType,
+              actualWeight: $form.actualWeight,
+              inCity: $form.inCity,
+              paymentOption: $form.paymentOption,
+            };
+
+            componentsOrder = 4;
+          }
+
+          // Disable navigation back to previous steps after completion
+          disableStepNavigation = true;
         }
       } else if (result.type === "error") {
         console.error("Submission error:", result.error);
@@ -304,6 +341,9 @@
     duration: 300,
     easing: (t: number) => 1 - Math.pow(1 - t, 3),
   }; // cubic-out easing
+
+  // Flag to disable navigation between steps after order completion
+  let disableStepNavigation = false;
 
   // Function to handle receiver info next event
   function handleReceiverInfoNext(event: CustomEvent) {
@@ -659,10 +699,53 @@
     return distance;
   }
 
-  // // Function to calculate price based on delivery parameters
-  // function calculatePrice(params: PricingParams): PriceBreakdown {
-  //   return calculatePriceUtil(params);
-  // }
+  // Function to completely reset form and start over
+  function resetOrderForm() {
+    if (browser) {
+      // Reset the completion flags
+      orderCompleted = false;
+      disableStepNavigation = false;
+      completedOrderId = null;
+      completedOrderDetails = null;
+
+      // Reset form to initial values
+      $form = {
+        userName: $page.data.session?.userData?.userName || "",
+        phoneNumber: $page.data.session?.userData?.phoneNumber || "",
+        pickUpLocation: $page.data.session?.customerData?.physicalAddress || "",
+        mapAddress: $page.data.session?.customerData?.mapAddress || "",
+        orderType: "STANDARD",
+        goodsType: "NORMAL",
+        packagingType: "STANDARD_BOX",
+        vehicleType: "CAR",
+        actualWeight: 0.5,
+        paymentOption: "pay_on_pickup",
+      };
+
+      // Reset validation state
+      errors.update(() => ({}));
+
+      // Reset componentsOrder to the first step
+      componentsOrder = 1;
+
+      // Reset additional state
+      pickupLat = null;
+      pickupLng = null;
+      dropOffLat = null;
+      dropOffLng = null;
+      packageTemp = undefined;
+      priceBreakdown = null;
+      estimatedPrice = null;
+
+      // Toast notification
+      toast.push("Ready to create a new order", {
+        theme: {
+          "--toastBackground": "#3B82F6",
+          "--toastBarBackground": "#2563EB",
+        },
+      });
+    }
+  }
 </script>
 
 <div class="max-w-3xl mx-auto px-4 py-8" bind:this={formContainer}>
@@ -690,12 +773,16 @@
         <div class="flex flex-col items-center">
           <button
             on:click={() => {
-              componentsOrder = 1;
+              if (!disableStepNavigation) componentsOrder = 1;
               // No need to manually call scrollToTop() as the reactive statement will handle it
             }}
             class="{componentsOrder >= 1
               ? 'bg-secondary text-white'
-              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg {disableStepNavigation &&
+            componentsOrder !== 1
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:shadow-lg'}"
+            disabled={disableStepNavigation && componentsOrder !== 1}
           >
             1
           </button>
@@ -711,12 +798,17 @@
         <div class="flex flex-col items-center">
           <button
             on:click={() => {
-              if (componentsOrder >= 2) componentsOrder = 2;
+              if (!disableStepNavigation && componentsOrder >= 2)
+                componentsOrder = 2;
               // No need to manually call scrollToTop() as the reactive statement will handle it
             }}
             class="{componentsOrder >= 2
               ? 'bg-secondary text-white'
-              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md {disableStepNavigation &&
+            componentsOrder !== 2
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:shadow-lg'}"
+            disabled={disableStepNavigation && componentsOrder !== 2}
           >
             2
           </button>
@@ -732,12 +824,17 @@
         <div class="flex flex-col items-center">
           <button
             on:click={() => {
-              if (componentsOrder >= 3) componentsOrder = 3;
+              if (!disableStepNavigation && componentsOrder >= 3)
+                componentsOrder = 3;
               // No need to manually call scrollToTop() as the reactive statement will handle it
             }}
             class="{componentsOrder >= 3
               ? 'bg-secondary text-white'
-              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md hover:shadow-lg"
+              : 'bg-gray-200 text-gray-500'} rounded-full h-10 w-10 flex justify-center items-center transition-all duration-300 shadow-md {disableStepNavigation &&
+            componentsOrder !== 3
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:shadow-lg'}"
+            disabled={disableStepNavigation && componentsOrder !== 3}
           >
             3
           </button>
@@ -973,10 +1070,14 @@
                     </svg>
                   </div>
                   <h2 class="text-2xl font-bold mb-2">
-                    Order Successfully Created!
+                    {completedOrderDetails?.paymentOption === "pay_now"
+                      ? "Order Created - Payment Pending"
+                      : "Order Successfully Created!"}
                   </h2>
                   <p class="text-white/90">
-                    Your shipment is on its way to being processed
+                    {completedOrderDetails?.paymentOption === "pay_now"
+                      ? "Please complete your payment to process your shipment"
+                      : "Your shipment is on its way to being processed"}
                   </p>
                 </div>
               </div>
@@ -1111,18 +1212,24 @@
                     </p>
                   </div>
 
-                  <div class="bg-gray-50 p-3 rounded-lg">
+                  <div
+                    class={`bg-gray-50 p-3 rounded-lg ${completedOrderDetails?.paymentOption === "pay_now" ? "border-2 border-blue-500" : ""}`}
+                  >
                     <span class="block text-xs text-gray-500">PAYMENT</span>
                     <span class="font-medium text-gray-800">
                       {completedOrderDetails?.paymentOption === "pay_on_pickup"
                         ? "Pay on pickup"
-                        : "Receiver pays"}
+                        : completedOrderDetails?.paymentOption === "pay_now"
+                          ? "Pay now"
+                          : "Receiver pays"}
                     </span>
                     <p class="text-xs text-gray-600 mt-0.5">
-                      {new Intl.NumberFormat("en-ET", {
-                        style: "currency",
-                        currency: "ETB",
-                      }).format(pricingData.totalCost || 0)}
+                      {completedOrderDetails?.paymentOption === "pay_now"
+                        ? "Payment pending - please complete payment"
+                        : new Intl.NumberFormat("en-ET", {
+                            style: "currency",
+                            currency: "ETB",
+                          }).format(pricingData.totalCost || 0)}
                     </p>
                   </div>
                 </div>
@@ -1134,44 +1241,85 @@
                   <h3 class="text-sm font-medium text-blue-800 mb-2">
                     What happens next?
                   </h3>
-                  <ol class="relative ml-6 text-sm">
-                    <li class="mb-3 relative">
-                      <div
-                        class="absolute w-3 h-3 bg-blue-500 rounded-full -left-6 mt-1"
-                      ></div>
-                      <p class="text-gray-700">
-                        <span class="font-medium">Order Processing:</span> We've
-                        received your order and are preparing for pickup.
-                      </p>
-                    </li>
-                    <li class="mb-3 relative">
-                      <div
-                        class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
-                      ></div>
-                      <p class="text-gray-600">
-                        <span class="font-medium">Courier Assignment:</span> A courier
-                        will be assigned to pick up your package.
-                      </p>
-                    </li>
-                    <li class="mb-3 relative">
-                      <div
-                        class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
-                      ></div>
-                      <p class="text-gray-600">
-                        <span class="font-medium">Pickup:</span> The courier will
-                        arrive at the sender's location.
-                      </p>
-                    </li>
-                    <li class="relative">
-                      <div
-                        class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
-                      ></div>
-                      <p class="text-gray-600">
-                        <span class="font-medium">Delivery:</span> Your package will
-                        be delivered to the recipient.
-                      </p>
-                    </li>
-                  </ol>
+                  {#if completedOrderDetails?.paymentOption === "pay_now"}
+                    <ol class="relative ml-6 text-sm">
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-blue-500 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-700">
+                          <span class="font-medium">Complete Payment:</span> Finish
+                          your payment in the payment window that opened.
+                        </p>
+                      </li>
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Order Processing:</span> After
+                          payment, your order will be processed.
+                        </p>
+                      </li>
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Courier Assignment:</span> A
+                          courier will be assigned to pick up your package.
+                        </p>
+                      </li>
+                      <li class="relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Delivery:</span> Your package
+                          will be delivered to the recipient.
+                        </p>
+                      </li>
+                    </ol>
+                  {:else}
+                    <ol class="relative ml-6 text-sm">
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-blue-500 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-700">
+                          <span class="font-medium">Order Processing:</span> We've
+                          received your order and are preparing for pickup.
+                        </p>
+                      </li>
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Courier Assignment:</span> A
+                          courier will be assigned to pick up your package.
+                        </p>
+                      </li>
+                      <li class="mb-3 relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Pickup:</span> The courier will
+                          arrive at the sender's location.
+                        </p>
+                      </li>
+                      <li class="relative">
+                        <div
+                          class="absolute w-3 h-3 bg-gray-300 rounded-full -left-6 mt-1"
+                        ></div>
+                        <p class="text-gray-600">
+                          <span class="font-medium">Delivery:</span> Your package
+                          will be delivered to the recipient.
+                        </p>
+                      </li>
+                    </ol>
+                  {/if}
                 </div>
 
                 <!-- Action buttons -->
@@ -1200,34 +1348,33 @@
                   </a>
 
                   <div class="flex space-x-3">
-                    {#if completedOrderDetails?.paymentOption === "pay_on_pickup"}
-                      <a
-                        href="/order-detail/{completedOrderId || ''}/payment"
-                        class="px-4 py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 transition-colors"
-                      >
-                        Pay Now
-                      </a>
-                    {/if}
                     <a
                       href="/all-orders"
                       class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
                     >
                       View All Orders
                     </a>
-                    <a
-                      href="/create-order"
-                      on:click={() => {
-                        // Reset everything when creating another order
-                        completedOrderId = null;
-                        completedOrderDetails = null;
-
-                        // Reset the form using a page navigation to avoid form state issues
-                        // The browser will reload the page, getting a fresh form state
-                      }}
-                      class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
+                    <button
+                      type="button"
+                      on:click={() => resetOrderForm()}
+                      class="px-4 py-2 bg-secondary text-white rounded-lg text-sm font-medium hover:bg-secondary-dark transition-colors flex items-center"
                     >
-                      Create Another
-                    </a>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="h-4 w-4 mr-1"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+                        />
+                      </svg>
+                      Create New Order
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1566,5 +1713,11 @@
       transform: translateY(100vh) rotate(360deg);
       opacity: 0;
     }
+  }
+
+  /* Add styles for disabled buttons */
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
   }
 </style>

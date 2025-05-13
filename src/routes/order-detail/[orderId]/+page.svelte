@@ -88,7 +88,8 @@
   function canCancelOrder() {
     return (
       data.orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED ||
-      data.orderDetail?.orderStatus === ORDER_STATUS.WAITING
+      data.orderDetail?.orderStatus === ORDER_STATUS.PENDING_PAYMENT ||
+      data.orderDetail?.orderStatus === ORDER_STATUS.ACCEPTED
     );
   }
 
@@ -128,6 +129,13 @@
           label: "Being Reviewed",
           message: "Your order is currently being reviewed by our team.",
           color: "text-yellow-600 bg-yellow-100",
+          icon: "time",
+        };
+      case ORDER_STATUS.PENDING_PAYMENT:
+        return {
+          label: "Payment Pending",
+          message: "Your order is waiting for payment to be completed.",
+          color: "text-orange-600 bg-orange-100",
           icon: "time",
         };
       case ORDER_STATUS.ASSIGNED:
@@ -519,17 +527,25 @@
   });
 
   function getStatusColor(status: string | undefined | null): string {
-    switch (status?.toLowerCase()) {
-      case "completed":
+    if (!status) return "bg-secondary";
+
+    switch (status) {
+      case ORDER_STATUS.COMPLETED:
         return "bg-emerald-500";
-      case "in progress":
-      case "inprogress":
-      case "claimed":
+      case ORDER_STATUS.IN_TRANSIT:
+      case ORDER_STATUS.SHIPPED:
+      case ORDER_STATUS.ITEMS_COLLECTED:
         return "bg-amber-500";
-      case "pending":
-      case "unclaimed":
+      case ORDER_STATUS.BEING_REVIEWED:
+      case ORDER_STATUS.WAITING:
+      case ORDER_STATUS.ASSIGNED:
         return "bg-blue-500";
-      case "cancelled":
+      case ORDER_STATUS.PENDING_PAYMENT:
+        return "bg-orange-500";
+      case ORDER_STATUS.ACCEPTED:
+        return "bg-green-500";
+      case ORDER_STATUS.CANCELLED:
+      case ORDER_STATUS.RETURNED:
         return "bg-red-500";
       default:
         return "bg-secondary";
@@ -539,14 +555,16 @@
   // Type-safe order status constants
   const ORDER_STATUS = {
     BEING_REVIEWED: "BEING_REVIEWED" as Order_orderStatus,
+    PENDING_PAYMENT: "PENDING_PAYMENT" as Order_orderStatus,
     WAITING: "WAITING" as Order_orderStatus,
     ACCEPTED: "ACCEPTED" as Order_orderStatus,
-    CANCELLED: "CANCELLED" as Order_orderStatus,
-    COMPLETED: "COMPLETED" as Order_orderStatus,
-    IN_TRANSIT: "IN_TRANSIT" as Order_orderStatus,
-    RETURNED: "RETURNED" as Order_orderStatus,
-    SHIPPED: "SHIPPED" as Order_orderStatus,
     ASSIGNED: "ASSIGNED" as Order_orderStatus,
+    ITEMS_COLLECTED: "ITEMS_COLLECTED" as Order_orderStatus,
+    IN_TRANSIT: "IN_TRANSIT" as Order_orderStatus,
+    SHIPPED: "SHIPPED" as Order_orderStatus,
+    COMPLETED: "COMPLETED" as Order_orderStatus,
+    CANCELLED: "CANCELLED" as Order_orderStatus,
+    RETURNED: "RETURNED" as Order_orderStatus,
   };
 </script>
 
@@ -746,7 +764,7 @@
                   </div>
 
                   <div class="flex space-x-2">
-                    {#if data.orderDetail?.orderStatus === ORDER_STATUS.BEING_REVIEWED}
+                    {#if canCancelOrder()}
                       <!-- Add Cancel Button -->
                       <button
                         on:click={() => {
@@ -758,14 +776,14 @@
                       </button>
                     {/if}
 
-                    {#if !isOrderPaid && !isPayOnDelivery && !isOrderCancelled}
+                    <!-- {#if !isOrderPaid && !isPayOnDelivery && !isOrderCancelled}
                       <a
                         href="/finalize-order/{data.orderDetail.id}"
                         class="px-4 py-2 text-sm font-medium text-white bg-secondary rounded-lg hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-secondary transition-colors duration-150"
                       >
                         Make Payment
                       </a>
-                    {/if}
+                    {/if} -->
                   </div>
                 </div>
               </div>
@@ -1036,9 +1054,9 @@
             >
           </div>
         </div>
-
+        <!-- 
         {#if isOrderUnclaimed && !isOrderPaid && !isPayOnDelivery}
-          <!-- Urgency and Social Proof for Pending Orders -->
+          
           <div
             class="mt-6 max-w-md mx-auto bg-gradient-to-r from-orange-50 to-yellow-50 rounded-lg p-4 shadow-sm border border-yellow-100"
             in:fly={{ y: 20, duration: 500, delay: 700 }}
@@ -1110,7 +1128,7 @@
               </div>
             </div>
           </div>
-        {/if}
+        {/if} -->
 
         {#if isOrderClaimed && !isOrderPaid && !isPayOnDelivery}
           <!-- Social Proof for Claimed Orders -->
@@ -2155,9 +2173,15 @@
       transition:scale={{ duration: 200, start: 0.95 }}
     >
       <h3 class="text-xl font-bold text-gray-800 mb-4">Cancel Your Order</h3>
-      <p class="text-gray-600 mb-4">
+      <p class="text-gray-600 mb-2">
         Are you sure you want to cancel this order? This action cannot be
         undone.
+      </p>
+      <p class="text-sm text-blue-600 bg-blue-50 p-3 rounded-lg mb-4">
+        Note: Orders can only be cancelled while they are in the <b
+          >Being Reviewed</b
+        >, <b>Payment Pending</b>, or <b>Accepted</b> status. Once your order is
+        assigned to a driver or in transit, it can no longer be cancelled.
       </p>
       <form
         method="post"
@@ -2185,7 +2209,7 @@
                 },
               });
             } else {
-              toast.push("Failed to cancel order", {
+              toast.push("Your order cannot be cancelled at this stage", {
                 theme: {
                   "--toastBackground": "#EF4444",
                   "--toastBarBackground": "#DC2626",

@@ -326,7 +326,7 @@
           Payment Options
         </h3>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <!-- Pay on Pickup Option -->
           <label
             class="flex flex-col sm:flex-row items-start h-full p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-all duration-200
@@ -422,6 +422,52 @@
               </div>
             {/if}
           </label>
+
+          <!-- Pay Now Option -->
+          <label
+            class="flex flex-col sm:flex-row items-start h-full p-4 border rounded-lg cursor-pointer hover:bg-gray-50 transition-all duration-200
+            {$form.paymentOption === 'pay_now'
+              ? 'border-secondary bg-secondary/5 shadow-md transform scale-[1.02]'
+              : 'border-gray-200'}"
+          >
+            <div class="flex items-start">
+              <input
+                type="radio"
+                name="paymentOption"
+                value="pay_now"
+                bind:group={$form.paymentOption}
+                class="mt-1 text-secondary focus:ring-secondary"
+              />
+              <div class="ml-3 flex-1">
+                <span class="font-medium text-gray-900 block mb-1"
+                  >Pay Now Online</span
+                >
+                <p class="text-xs text-gray-500">
+                  Pay immediately using card or mobile payment
+                </p>
+              </div>
+            </div>
+            {#if $form.paymentOption === "pay_now"}
+              <div class="hidden sm:flex items-center justify-center ml-auto">
+                <div class="bg-secondary text-white rounded-full p-1">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+              </div>
+            {/if}
+          </label>
         </div>
 
         <!-- Payment method explanation -->
@@ -447,13 +493,47 @@
               {#if $form.paymentOption === "pay_on_pickup"}
                 You'll pay the driver directly when they arrive to pick up your
                 package. We accept cash and mobile payments.
-              {:else}
+              {:else if $form.paymentOption === "pay_on_delivery"}
                 The recipient will need to pay for the delivery when they
                 receive the package. Make sure they're informed.
+              {:else if $form.paymentOption === "pay_now"}
+                You'll be directed to our secure payment gateway after placing
+                your order. We accept debit/credit cards, Telebirr, and bank
+                transfers.
               {/if}
             </p>
           </div>
         </div>
+
+        <!-- Payment Method Icons - Only show for Pay Now option -->
+        {#if $form.paymentOption === "pay_now"}
+          <div class="mt-4 flex flex-wrap justify-center gap-2">
+            <div
+              class="bg-white p-2 rounded-lg border border-gray-200 flex items-center shadow-sm"
+            >
+              <span class="text-xs font-medium text-gray-700 mx-2">Visa</span>
+            </div>
+            <div
+              class="bg-white p-2 rounded-lg border border-gray-200 flex items-center shadow-sm"
+            >
+              <span class="text-xs font-medium text-gray-700 mx-2"
+                >MasterCard</span
+              >
+            </div>
+            <div
+              class="bg-white p-2 rounded-lg border border-gray-200 flex items-center shadow-sm"
+            >
+              <span class="text-xs font-medium text-gray-700 mx-2"
+                >Telebirr</span
+              >
+            </div>
+            <div
+              class="bg-white p-2 rounded-lg border border-gray-200 flex items-center shadow-sm"
+            >
+              <span class="text-xs font-medium text-gray-700 mx-2">CBE</span>
+            </div>
+          </div>
+        {/if}
 
         <!-- Completion Animation - More responsive and elegant -->
         <div

@@ -341,6 +341,7 @@ model Order {
   dropOffMapLocation         String
   pickUpPhysicalLocation     String
   pickUpMapLocation          String
+  
   packageType                PackageType
   paymentStatus              Boolean
   paymentOption              String?                @default("pay_on_acceptance") 
@@ -355,6 +356,7 @@ model Order {
   paymentDate                DateTime?
   paymentMethod              PaymentMethod?
   actualWeight               Float?
+  metadata                   Json?
   baseShippingCost           Float?
   dimensionalWeight          Float?
   goodsType                  GoodsType?
@@ -983,6 +985,7 @@ enum Vehicles_vehicleType {
 
 enum Order_orderStatus {
   BEING_REVIEWED
+  PENDING_PAYMENT
   ASSIGNED
   WAITING
   ACCEPTED

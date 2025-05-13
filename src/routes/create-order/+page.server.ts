@@ -6,8 +6,10 @@ import { createOrderSchema } from "$lib/utils/schemas/create-order";
 import { superValidate } from "sveltekit-superforms/server";
 import { zod } from 'sveltekit-superforms/adapters';
 import { Prisma } from '@prisma/client';
+import { initializeChapa } from "$lib/services/payment";
 
-
+// Import WEBAPP_URL for Chapa integration
+import { WEBAPP_URL } from '$env/static/private';
 
 // Define the EnhancedSessionType for better type checking
 
@@ -826,6 +828,24 @@ export const actions = {
     console.log("Form is valid, proceeding with order creation");
     const formData = form.data;
 
+    // If payment option is pay_now, create a draft order and redirect to payment
+    if (formData.paymentOption === 'pay_now') {
+      try {
+        const draftOrderResult = await createDraftOrder(formData, session);
+        return {
+          form,
+          success: true,
+          draftOrder: true,
+          orderId: draftOrderResult.orderId,
+          paymentUrl: draftOrderResult.paymentUrl,
+          message: "Draft order created successfully, redirecting to payment"
+        };
+      } catch (error) {
+        console.error("Error creating draft order:", error);
+        return fail(500, { form, errorMessage: "Failed to create draft order for payment" });
+      }
+    }
+
     // Extract price breakdown data directly from form
     const priceBreakdown = formData.priceBreakdown || {};
 
@@ -1402,6 +1422,129 @@ Your order is being processed and will be picked up soon. You can track your ord
     }
   },
 };
+
+/**
+ * Creates a draft order for payment processing
+ * Returns the draft order ID and payment URL
+ */
+async function createDraftOrder(
+  formData: {
+    dropOffLocation: string;
+    dropOffMapAddress: string;
+    packageType: PackageType;
+    paymentOption: string;
+    mapAddress: string;
+    pickUpLocation: string;
+    receiverUsername?: string;
+    receiverEmail?: string;
+    receiverPhoneNumber?: string;
+    inCity: string;
+    totalCost: number;
+    priceBreakdown?: {
+      baseShippingCost?: number;
+      packagingCost?: number;
+      totalAdditionalFees?: number;
+    };
+    pickUpTime?: Date | string | null;
+    dropOffTime?: Date | string | null;
+    orderType?: OrderType | string;
+    goodsType?: GoodsType | string;
+    packagingType?: PackagingType | string;
+    vehicleType?: Vehicles_vehicleType | string;
+    actualWeight?: number;
+    originCity?: string;
+    destinationCity?: string;
+    distanceInKm?: number;
+    estimatedTimeInMinutes?: number;
+    receiverId?: string | number;
+    length?: number;
+    width?: number;
+    height?: number;
+  },
+  session: EnhancedSessionType
+) {
+  // Create draft order with all information needed for complete order
+  const orderData = {
+    senderCustomerId: Number(session?.customerData.id),
+    dropOffPhysicalLocation: formData.dropOffLocation,
+    dropOffMapLocation: formData.dropOffMapAddress,
+    orderStatus: "PENDING_PAYMENT" as Order_orderStatus, // Special status for draft orders
+    packageType: formData.packageType,
+    paymentStatus: false,
+    paymentOption: formData.paymentOption,
+    pickUpMapLocation: formData.mapAddress,
+    pickUpPhysicalLocation: formData.pickUpLocation,
+    receiverName: formData.receiverUsername ?? null,
+    receiverEmail: formData.receiverEmail ?? null,
+    receiverPhoneNumber: formData.receiverPhoneNumber ?? null,
+    receiverCustomerId: formData.receiverId ? Number(formData.receiverId) : null,
+    isInCity: formData.inCity === "1",
+    totalCost: formData.totalCost || 0,
+
+    // Add time information
+    pickUpTime: formData.pickUpTime || null,
+    dropOffTime: formData.dropOffTime || null,
+
+    // Add order characteristics
+    orderType: formData.orderType as OrderType || null,
+    goodsType: formData.goodsType as GoodsType || null,
+
+    // Add vehicle and packaging info
+    packagingType: formData.packagingType as PackagingType || null,
+    vehicleType: formData.vehicleType as Vehicles_vehicleType || null,
+
+    // Add weight and dimension info
+    actualWeight: formData.actualWeight || 0.5,
+
+    // Calculate dimensional weight if dimensions are provided
+    dimensionalWeight: (formData.length && formData.width && formData.height)
+      ? (Number(formData.length) * Number(formData.width) * Number(formData.height)) / 5000
+      : null,
+
+    // Add location and distance info
+    originCity: formData.originCity || "Addis Ababa",
+    destinationCity: formData.destinationCity || "Addis Ababa",
+    distanceInKm: formData.distanceInKm || null,
+    estimatedTimeInMinutes: formData.estimatedTimeInMinutes || null,
+
+    // Include pricing info
+    baseShippingCost: formData.priceBreakdown?.baseShippingCost || 0,
+    packagingCost: formData.priceBreakdown?.packagingCost || 0,
+    totalAdditionalFees: formData.priceBreakdown?.totalAdditionalFees || 0,
+
+    // Add basic metadata for order completion after payment
+    metadata: JSON.stringify({
+      isDraft: true,
+      completeOrderData: formData
+    })
+  };
+
+  // Create the draft order
+  const draftOrder = await prisma.order.create({
+    data: orderData
+  });
+
+  console.log("Draft order created with ID:", draftOrder.id);
+
+  // Initialize payment with Chapa
+  const userDetails = {
+    email: session.userData.email || "",
+    phoneNumber: session.userData.phoneNumber || "",
+    firstName: session.userData.userName?.split(' ')[0] || "",
+    lastName: session.userData.userName?.split(' ')[1] || session.userData.userName || "",
+  };
+
+  // Initialize payment with Chapa using our new service
+  const paymentResult = await initializeChapa(draftOrder, userDetails, {
+    webappUrl: WEBAPP_URL,
+    isDraft: true
+  });
+
+  return {
+    orderId: draftOrder.id,
+    paymentUrl: paymentResult.checkoutUrl
+  };
+}
 
 
 

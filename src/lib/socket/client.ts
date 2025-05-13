@@ -68,6 +68,27 @@ export const paymentEvents = writable<{
     }
 }>({});
 
+// Milestone update events
+export const milestoneEvents = writable<{
+    [milestoneId: string]: {
+        orderId: number;
+        orderMilestoneId: number;
+        milestoneCompleted: boolean;
+        isLastMilestone: boolean;
+        orderStatus: string;
+        updatedAt: string;
+        milestoneDescription: string;
+        milestoneInfo?: {
+            id: number;
+            description: string;
+            isCompleted: boolean;
+            executionOrder?: number;
+            coordinates?: string;
+        };
+        paymentInfo?: any;
+    }
+}>({});
+
 // Function to log socket events
 export function logSocketEvent(event: string, data?: any) {
     console.log(`Socket event: ${event}`, data);
@@ -272,6 +293,23 @@ export function subscribeToPaymentUpdates(orderId: number): void {
     // This event doesn't exist on the server yet, but could be added in the future
     socketInstance.emit('getPaymentStatus', { orderId });
 }
+
+/**
+ * Subscribe to milestone updates for an order
+ */
+export function subscribeToMilestoneUpdates(orderId: number): void {
+    if (!socketInstance) return;
+
+    console.log(`Subscribing to milestone updates for order ${orderId}`);
+
+    // Join the order-specific room
+    socketInstance.emit('join', `order_${orderId}`);
+
+    // Request any existing milestone status
+    // This event doesn't exist on the server yet, but could be added in the future
+    socketInstance.emit('getMilestoneStatus', { orderId });
+}
+
 
 
 /**
@@ -580,6 +618,120 @@ function setupMessageHandlers(socket: Socket): void {
         // Dispatch a custom event that components can listen for
         if (browser) {
             const event = new CustomEvent('paymentVerified', {
+                detail: data
+            });
+            window.dispatchEvent(event);
+        }
+    });
+
+    // Milestone update event
+    socket.on('milestoneUpdated', (data: {
+        orderId: number;
+        orderMilestoneId: number;
+        milestoneCompleted: boolean;
+        isLastMilestone: boolean;
+        orderStatus: string;
+        updatedAt: string;
+        milestoneDescription: string;
+        milestoneInfo?: {
+            id: number;
+            description: string;
+            isCompleted: boolean;
+            executionOrder?: number;
+            coordinates?: string;
+        };
+        paymentInfo?: any;
+    }) => {
+        console.log('Received milestone update event:', data);
+
+        // Update the milestone events store
+        milestoneEvents.update(events => {
+            const milestoneId = data.orderMilestoneId.toString();
+            events[milestoneId] = {
+                orderId: data.orderId,
+                orderMilestoneId: data.orderMilestoneId,
+                milestoneCompleted: data.milestoneCompleted,
+                isLastMilestone: data.isLastMilestone,
+                orderStatus: data.orderStatus,
+                updatedAt: data.updatedAt,
+                milestoneDescription: data.milestoneDescription,
+                milestoneInfo: data.milestoneInfo,
+                paymentInfo: data.paymentInfo
+            };
+            return events;
+        });
+
+        // If milestone is completed, update the order status in active orders
+        if (data.milestoneCompleted) {
+            activeOrders.update(orders => {
+                const index = orders.findIndex(o => o.id === data.orderId);
+                if (index >= 0) {
+                    // Create updated order object with milestone info
+                    const updatedOrder = {
+                        ...orders[index],
+                        orderStatus: data.orderStatus || orders[index].orderStatus,
+                        // Update the milestones array if it exists
+                        orderMilestone: orders[index].orderMilestone?.map((m: any) =>
+                            m.id === data.orderMilestoneId
+                                ? { ...m, isCompleted: true }
+                                : m
+                        )
+                    };
+
+                    // Replace the order in the array
+                    return [
+                        ...orders.slice(0, index),
+                        updatedOrder,
+                        ...orders.slice(index + 1)
+                    ];
+                }
+                return orders;
+            });
+
+            // Update warehouse orders if applicable
+            warehouseOrders.update(stores => {
+                // Make a copy of the stores object
+                const updatedStores = { ...stores };
+
+                // Look through each warehouse's orders
+                Object.keys(updatedStores).forEach(warehouseId => {
+                    const warehouseIdNum = parseInt(warehouseId);
+                    if (isNaN(warehouseIdNum)) return;
+
+                    const orders = updatedStores[warehouseIdNum];
+                    if (!orders || !Array.isArray(orders)) return;
+
+                    const index = orders.findIndex((o: Order) => o.id === data.orderId);
+
+                    if (index >= 0) {
+                        // Update the order in this warehouse
+                        const updatedOrder = {
+                            ...orders[index],
+                            orderStatus: data.orderStatus || orders[index].orderStatus,
+                            // Update the milestones array if it exists
+                            orderMilestone: orders[index].orderMilestone?.map((m: any) =>
+                                m.id === data.orderMilestoneId
+                                    ? { ...m, isCompleted: true }
+                                    : m
+                            )
+                        };
+
+                        // Replace the order in the array
+                        updatedStores[warehouseIdNum] = [
+                            ...orders.slice(0, index),
+                            updatedOrder,
+                            ...orders.slice(index + 1)
+                        ];
+                    }
+                });
+
+                return updatedStores;
+            });
+        }
+
+        // Dispatch a custom event that components can listen for
+        if (browser) {
+            const event = new CustomEvent('milestoneUpdated', {
                 detail: data
             });
             window.dispatchEvent(event);

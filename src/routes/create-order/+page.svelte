@@ -708,18 +708,54 @@
       completedOrderId = null;
       completedOrderDetails = null;
 
-      // Reset form to initial values
+      // Reset form to initial values with all required properties
       $form = {
+        // Basic sender information
         userName: $page.data.session?.userData?.userName || "",
         phoneNumber: $page.data.session?.userData?.phoneNumber || "",
         pickUpLocation: $page.data.session?.customerData?.physicalAddress || "",
         mapAddress: $page.data.session?.customerData?.mapAddress || "",
+
+        // Receiver information (with empty defaults)
+        receiverUsername: "",
+        receiverPhoneNumber: "",
+        receiverEmail: "",
+        dropOffLocation: "",
+        dropOffMapAddress: "",
+        inCity: "1", // Default to in-city delivery
+
+        // Package and order details
+        packageType: "DOCUMENT",
         orderType: "STANDARD",
         goodsType: "NORMAL",
         packagingType: "STANDARD_BOX",
         vehicleType: "CAR",
         actualWeight: 0.5,
         paymentOption: "pay_on_pickup",
+
+        // Optional fields with defaults
+        length: 0,
+        width: 0,
+        height: 0,
+        distanceInKm: 0,
+        estimatedTimeInMinutes: 0,
+        // Provide a properly shaped priceBreakdown object
+        priceBreakdown: {
+          baseShippingCost: 0,
+          effectiveWeight: 0.5,
+          customerTypeMultiplier: 1,
+          subscriptionTypeMultiplier: 1,
+          orderTypeMultiplier: 1,
+          vehicleTypeMultiplier: 1,
+          packagingCost: 0,
+          goodsTypeMultiplier: 1,
+          multipliedShippingCost: 0,
+          distanceSurcharge: 0,
+          additionalFees: [],
+          discounts: [],
+          totalCost: 0,
+        },
+        totalCost: 0,
       };
 
       // Reset validation state
@@ -733,7 +769,7 @@
       pickupLng = null;
       dropOffLat = null;
       dropOffLng = null;
-      packageTemp = undefined;
+      packageTemp = null as unknown as PackageType; // Reset with proper type casting
       priceBreakdown = null;
       estimatedPrice = null;
 

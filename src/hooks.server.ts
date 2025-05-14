@@ -166,8 +166,10 @@ const localeHook: Handle = async ({ event, resolve }) => {
 
             // Create warehouse notification if needed (for the appropriate warehouse handling the order)
             const warehouse = order.orderMilestone?.find(m => m.warehouseId !== null)?.warehouseId;
+            let employeeNotification = null;
+
             if (warehouse) {
-                await prisma.employeeNotification.create({
+                employeeNotification = await prisma.employeeNotification.create({
                     data: {
                         warehouseId: warehouse,
                         title: "New Order Created",
@@ -182,6 +184,8 @@ const localeHook: Handle = async ({ event, resolve }) => {
                         })
                     }
                 });
+
+                console.log(`Created employee notification for warehouse ${warehouse}:`, employeeNotification);
             }
 
             console.log(`Created notification records for order ${orderId}`);
@@ -217,7 +221,18 @@ const localeHook: Handle = async ({ event, resolve }) => {
                     console.log(`Emitting orderCreated event for order ${order.id} to admin_orders room`);
                     socket.emit('orderCreated', order);
 
+                    // Emit employee notification if it exists (warehouse was assigned)
+                    if (employeeNotification) {
+                        console.log(`Emitting employeeNotifications for warehouse ${warehouse}`);
+                        // Send as an array since the handler expects an array of notifications
+                        socket.emit('employeeNotifications', [employeeNotification]);
 
+                        // Also emit to a warehouse-specific room for targeted delivery
+                        socket.emit('warehouseNotification', {
+                            room: `warehouse_${warehouse}`,
+                            notification: employeeNotification
+                        });
+                    }
 
                     // Also emit to admin socket server's internal event
                     console.log(`Emitting server-side orderCreated event for order ${order.id}`);

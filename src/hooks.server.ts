@@ -4,6 +4,7 @@ import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 import { io } from 'socket.io-client';
 import { PrismaClient } from "@prisma/client";
+import { sendPushNotification } from '$lib/firebase/notifications';
 
 const prisma = new PrismaClient();
 
@@ -148,7 +149,7 @@ const localeHook: Handle = async ({ event, resolve }) => {
             // Create notification records - we'll rely on the admin app to push them via socket
             // Create customer notification
             if (order.senderCustomerId) {
-                await prisma.customerNotification.create({
+                const customerNotification = await prisma.customerNotification.create({
                     data: {
                         customerId: order.senderCustomerId,
                         title: "Order Status Updated",
@@ -162,10 +163,79 @@ const localeHook: Handle = async ({ event, resolve }) => {
                         })
                     }
                 });
+
+                // Send push notification to sender if FCM token exists
+                try {
+                    // Since fcmToken might not be directly on User, look for it in a way that avoids errors
+                    // The token might be associated with the customer record rather than the User record
+                    const sender = order.Sender;
+                    // Use any available token or identifier that could be used for notifications
+                    const senderFcmToken = sender?.fcmToken ||
+                        (sender?.User && 'fcmToken' in sender.User ?
+                            (sender.User as any).fcmToken : null);
+
+                    if (senderFcmToken) {
+                        console.log(`Sending push notification to sender with token: ${senderFcmToken}`);
+                        await sendPushNotification(senderFcmToken, {
+                            title: "Order Created Successfully",
+                            body: `Your order #${order.id} has been created and is being processed.`
+                        });
+                        console.log(`Push notification sent to sender for order #${order.id}`);
+                    } else {
+                        console.log(`No FCM token found for sender of order #${order.id}`);
+                    }
+                } catch (pushError) {
+                    console.error(`Error sending push notification to sender:`, pushError);
+                }
+            }
+
+            // Send notification to receiver if receiver exists and has FCM token
+            if (order.receiverCustomerId && order.Receiver) {
+                try {
+                    // Since fcmToken might not be directly on User, look for it in a way that avoids errors
+                    const receiver = order.Receiver;
+                    // Use any available token or identifier that could be used for notifications
+                    const receiverFcmToken = receiver.fcmToken ||
+                        (receiver.User && 'fcmToken' in receiver.User ?
+                            (receiver.User as any).fcmToken : null);
+
+                    if (receiverFcmToken) {
+                        console.log(`Sending push notification to receiver with token: ${receiverFcmToken}`);
+                        await sendPushNotification(receiverFcmToken, {
+                            title: "New Shipment On The Way",
+                            body: `A new shipment (Order #${order.id}) is on its way to you.`
+                        });
+
+                        // Create notification in database for receiver
+                        await prisma.customerNotification.create({
+                            data: {
+                                customerId: order.receiverCustomerId,
+                                title: "New Shipment On The Way",
+                                content: `A new shipment (Order #${order.id}) is on its way to you.`,
+                                type: "ORDER_CREATED_RECEIVER",
+                                orderId: order.id,
+                                metadata: JSON.stringify({
+                                    order_id: order.id,
+                                    order_status: order.orderStatus,
+                                    timestamp: new Date().toISOString()
+                                })
+                            }
+                        });
+
+                        console.log(`Push notification sent to receiver for order #${order.id}`);
+                    } else {
+                        console.log(`No FCM token found for receiver of order #${order.id}`);
+                    }
+                } catch (pushError) {
+                    console.error(`Error sending push notification to receiver:`, pushError);
+                }
             }
 
             // Create warehouse notification if needed (for the appropriate warehouse handling the order)
-            const warehouse = order.orderMilestone?.find(m => m.warehouseId !== null)?.warehouseId;
+            const warehouse = order.orderMilestone && order.orderMilestone.length > 0 ?
+                order.orderMilestone.find(milestone => milestone.warehouseId !== null)?.warehouseId :
+                null;
+
             let employeeNotification = null;
 
             if (warehouse) {
@@ -186,9 +256,86 @@ const localeHook: Handle = async ({ event, resolve }) => {
                 });
 
                 console.log(`Created employee notification for warehouse ${warehouse}:`, employeeNotification);
+
+                // Send push notifications to warehouse employees if needed
+                try {
+                    // Get warehouse employees with FCM tokens
+                    const warehouseEmployees = await prisma.employee.findMany({
+                        where: {
+                            warehouseId: warehouse,
+                            fcmToken: { not: null }
+                        }
+                    });
+
+                    console.log(`Found ${warehouseEmployees.length} warehouse employees with FCM tokens`);
+
+                    // Send notifications to each employee
+                    for (const employee of warehouseEmployees) {
+                        if (employee.fcmToken) {
+                            await sendPushNotification(employee.fcmToken, {
+                                title: "New Order Assigned",
+                                body: `Order #${order.id} has been assigned to your warehouse.`
+                            });
+                            console.log(`Push notification sent to employee ${employee.id} for order #${order.id}`);
+                        }
+                    }
+
+                    // Also notify the warehouse admin for this specific warehouse
+                    const warehouseAdmin = await prisma.employee.findFirst({
+                        where: {
+                            warehouseId: warehouse,
+                            fcmToken: { not: null },
+                            Role: {
+                                isWarehouseAdmin: true
+                            }
+                        },
+                        include: {
+                            Role: true
+                        }
+                    });
+
+                    if (warehouseAdmin?.fcmToken) {
+                        await sendPushNotification(warehouseAdmin.fcmToken, {
+                            title: "New Order Requires Attention",
+                            body: `Order #${order.id} has been assigned to your warehouse. Please review and assign resources.`
+                        });
+                        console.log(`Push notification sent to warehouse admin (${warehouseAdmin.Role.name}) for order #${order.id}`);
+                    }
+                } catch (pushError) {
+                    console.error(`Error sending push notifications to warehouse employees:`, pushError);
+                }
             }
 
-            console.log(`Created notification records for order ${orderId}`);
+            // Always notify super admins regardless of warehouse assignment
+            try {
+                // Get super admins with FCM tokens
+                const superAdmins = await prisma.employee.findMany({
+                    where: {
+                        fcmToken: { not: null },
+                        Role: {
+                            name: "Super Admin"
+                        }
+                    },
+                    include: {
+                        Role: true
+                    }
+                });
+
+                console.log(`Found ${superAdmins.length} super admins with FCM tokens`);
+
+                // Send notifications to each super admin
+                for (const admin of superAdmins) {
+                    if (admin.fcmToken) {
+                        await sendPushNotification(admin.fcmToken, {
+                            title: "New Order Created",
+                            body: `Order #${order.id} has been created ${warehouse ? `and assigned to warehouse ${warehouse}` : 'but not yet assigned to a warehouse'}.`
+                        });
+                        console.log(`Push notification sent to super admin (${admin.Role.name}) ${admin.id} for order #${order.id}`);
+                    }
+                }
+            } catch (error) {
+                console.error(`Error sending push notifications to super admins:`, error);
+            }
 
             // IMPORTANT: Now we also need to send a socket.io event to the admin app
             try {

@@ -724,6 +724,11 @@
         dropOffMapAddress: "",
         inCity: "1", // Default to in-city delivery
 
+        // City information
+        originCity: "Addis Ababa", // Default city
+        destinationCity: "Addis Ababa", // Default city
+        deliveryCity: "Addis Ababa", // Default city
+
         // Package and order details
         packageType: "DOCUMENT",
         orderType: "STANDARD",
@@ -750,9 +755,10 @@
           packagingCost: 0,
           goodsTypeMultiplier: 1,
           multipliedShippingCost: 0,
-          distanceSurcharge: 0,
           additionalFees: [],
-          discounts: [],
+          // Add the missing properties
+          premiumTypeMultiplier: 1,
+          totalAdditionalFees: 0,
           totalCost: 0,
         },
         totalCost: 0,

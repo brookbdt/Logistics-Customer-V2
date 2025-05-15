@@ -72,6 +72,12 @@
   // Handle package selection
   function selectPackage(type: string) {
     $form.packageType = type as PackageType;
+
+    // Set default vehicle type based on package type
+    if (type === "PALLET") {
+      $form.vehicleType = "CAR"; // Default to CAR for pallets
+    }
+
     // Dispatch the select event with the package type
     dispatch("select", type as PackageType);
     // Reset following sections if package type changes
@@ -238,6 +244,34 @@
               <option value="CAR">Car (Medium parcels)</option>
               <option value="TRUCK">Truck (Large parcels)</option>
             </select>
+          </div>
+        {:else if $form.packageType === "PALLET"}
+          <div
+            class="mt-4 bg-blue-50 p-3 rounded-lg border border-blue-100 flex items-center"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5 text-blue-500 mr-2 flex-shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <div>
+              <p class="text-sm text-blue-800 font-medium">
+                Car assigned for delivery
+              </p>
+              <p class="text-xs text-blue-600">
+                For pallet shipments, we automatically assign a car for safe
+                transport
+              </p>
+            </div>
           </div>
         {/if}
       </div>

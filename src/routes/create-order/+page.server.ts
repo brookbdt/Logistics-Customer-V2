@@ -1101,7 +1101,7 @@ export const actions = {
         // Add appropriate transit milestone based on in-city or between-cities
         if (isInCityBool) {
           orderMilestones.push({
-            description: "In Transit",
+            description: "In Transit to Customer",
             coordinates: mapAddress,
             warehouseId: nearToSenderWarehouse.id,
             executionOrder: 5

@@ -1207,134 +1207,193 @@
 
       <!-- Rating Buttons -->
       <div
-        class="grid grid-cols-2 gap-4 mb-10"
+        class="grid grid-cols-1 gap-4 mb-10"
         in:fly={{ y: 20, duration: 500, delay: 300 }}
       >
-        <!-- Rate Service Button - only show if order is completed and not yet rated -->
-        {#if isOrderCompleted && !hasUserRatedOrder}
-          <button
-            on:click={() => (orderRateModal = true)}
-            class="flex items-center justify-center space-x-2 bg-gradient-to-r from-complementary to-complementary/90 text-white py-3 px-4 rounded-xl shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-300"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
-              />
-            </svg>
-            <span>Rate Service</span>
-          </button>
-        {:else if hasUserRatedOrder}
+        {#if hasUserRatedOrder && (ratedDrivers.length > 0 || unratedDrivers.length === 0)}
+          <!-- Show a combined thank you card when all ratings are complete -->
           <div
-            class="flex items-center justify-center space-x-2 bg-green-100 text-green-700 py-3 px-4 rounded-xl cursor-default"
+            class="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-5 border border-green-100 shadow-sm"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-            <span>Service Rated</span>
+            <div class="flex items-start">
+              <div class="flex-shrink-0">
+                <div class="bg-green-100 p-2 rounded-full">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-6 w-6 text-green-600"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <div class="ml-3">
+                <h3 class="text-lg font-medium text-green-800">
+                  Thank you for your valuable feedback!
+                </h3>
+                <p class="mt-1 text-sm text-green-600">
+                  Your ratings help us improve our services and recognize
+                  excellent couriers.
+                </p>
+                <div class="mt-3 flex space-x-3">
+                  <div
+                    class="flex items-center bg-white px-3 py-1 rounded-full shadow-sm"
+                  >
+                    <span class="text-xs font-medium text-gray-600"
+                      >Service Rated</span
+                    >
+                  </div>
+                  {#if ratedDrivers.length > 0}
+                    <div
+                      class="flex items-center bg-white px-3 py-1 rounded-full shadow-sm"
+                    >
+                      <span class="text-xs font-medium text-gray-600">
+                        {ratedDrivers.length}
+                        {ratedDrivers.length === 1 ? "Courier" : "Couriers"} Rated
+                      </span>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
           </div>
         {:else}
-          <div
-            class="flex items-center justify-center space-x-2 bg-gray-300 text-gray-600 py-3 px-4 rounded-xl cursor-not-allowed"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
-              />
-            </svg>
-            <span>Service Rating Available After Delivery</span>
-          </div>
-        {/if}
+          <!-- Show individual rating buttons when ratings are incomplete -->
+          <div class="grid grid-cols-2 gap-4">
+            <!-- Rate Service Button - only show if order is completed and not yet rated -->
+            {#if isOrderCompleted && !hasUserRatedOrder}
+              <button
+                on:click={() => (orderRateModal = true)}
+                class="flex items-center justify-center space-x-2 bg-gradient-to-r from-complementary to-complementary/90 text-white py-3 px-4 rounded-xl shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-300"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                  />
+                </svg>
+                <span>Rate Service</span>
+              </button>
+            {:else if hasUserRatedOrder}
+              <div
+                class="flex items-center justify-center space-x-2 bg-green-100 text-green-700 py-3 px-4 rounded-xl cursor-default"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                <span>Service Rated</span>
+              </div>
+            {:else}
+              <div
+                class="flex items-center justify-center space-x-2 bg-gray-300 text-gray-600 py-3 px-4 rounded-xl cursor-not-allowed"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                  />
+                </svg>
+                <span>Service Rating Available After Delivery</span>
+              </div>
+            {/if}
 
-        <!-- Rate Courier Button - only show if there are unrated eligible drivers -->
-        {#if unratedDrivers.length > 0}
-          <button
-            on:click={() => (driverRateModal = true)}
-            class="flex items-center justify-center space-x-2 bg-gradient-to-r from-secondary/90 to-secondary text-white py-3 px-4 rounded-xl shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-300"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-              />
-            </svg>
-            <span>Rate Courier</span>
-          </button>
-        {:else if ratedDrivers.length > 0 && eligibleDrivers.length === 0}
-          <div
-            class="flex items-center justify-center space-x-2 bg-green-100 text-green-700 py-3 px-4 rounded-xl cursor-default"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-            <span>All Couriers Rated</span>
-          </div>
-        {:else}
-          <div
-            class="flex items-center justify-center space-x-2 bg-gray-300 text-gray-600 py-3 px-4 rounded-xl cursor-not-allowed"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-              />
-            </svg>
-            <span>Courier Rating Available After Delivery</span>
+            <!-- Rate Courier Button - only show if there are unrated eligible drivers -->
+            {#if unratedDrivers.length > 0}
+              <button
+                on:click={() => (driverRateModal = true)}
+                class="flex items-center justify-center space-x-2 bg-gradient-to-r from-secondary/90 to-secondary text-white py-3 px-4 rounded-xl shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-300"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                  />
+                </svg>
+                <span>Rate Courier</span>
+              </button>
+            {:else if ratedDrivers.length > 0}
+              <div
+                class="flex items-center justify-center space-x-2 bg-green-100 text-green-700 py-3 px-4 rounded-xl cursor-default"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                <span>All Couriers Rated</span>
+              </div>
+            {:else}
+              <div
+                class="flex items-center justify-center space-x-2 bg-gray-300 text-gray-600 py-3 px-4 rounded-xl cursor-not-allowed"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                  />
+                </svg>
+                <span>Courier Rating Available After Delivery</span>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
